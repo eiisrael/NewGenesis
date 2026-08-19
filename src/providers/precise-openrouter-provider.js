@@ -47,9 +47,22 @@ function successfulReadEvidence(messages = []) {
 }
 
 export function agenticToolsForMessages(tools = [], messages = []) {
-  if (projectToolPhase(tools) !== 'mixed' || successfulReadEvidence(messages) < 2) return tools;
+  if (projectToolPhase(tools) !== 'mixed') return tools;
+  const evidence = successfulReadEvidence(messages);
+  if (evidence === 0) {
+    // A primeira rodada nunca escreve. Modelos com tool calling nativo recebem
+    // search_project como escolha forçada; modelos legados ainda podem devolver
+    // read_file e ter essa chamada recuperada com segurança.
+    const reads = tools.filter(tool => isProjectReadTool(tool));
+    return reads.length ? reads : tools;
+  }
+  if (evidence < 2) return tools;
   const mutations = tools.filter(tool => isProjectMutationTool(tool));
   return mutations.length ? mutations : tools;
+}
+
+export function projectToolActionRequired(suppliedTools = [], effectiveTools = suppliedTools) {
+  return projectToolPhase(suppliedTools) === 'mixed' || projectToolCallRequired(effectiveTools);
 }
 
 function wait(milliseconds, signal) {
@@ -130,9 +143,6 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
     return state;
   }
 
-  // O orquestrador já carrega a continuidade canônica entre rotas. Duplicá-la
-  // novamente no provider fazia o mesmo resultado de ferramenta ocupar contexto
-  // duas vezes e aumentava o custo de cada rodada subsequente.
   continuityMessage() {
     return '';
   }
@@ -174,19 +184,15 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
     const suppliedTools = input.tools || [];
     const suppliedPhase = projectToolPhase(suppliedTools);
     const tools = agenticToolsForMessages(suppliedTools, input.messages || []);
-    const enoughExploration = tools !== suppliedTools;
+    const enoughExploration = suppliedPhase === 'mixed' && projectToolPhase(tools) === 'mutation';
     const phase = projectToolPhase(tools);
-    const required = projectToolCallRequired(tools);
+    const required = projectToolActionRequired(suppliedTools, tools);
     this.activeTaskFingerprints.set(key, fingerprint);
     const state = this.sessionState(key);
     const previousMutationCount = state.mutations;
     const suppressLegacyMutationGuard = suppliedPhase === 'mixed' && !enoughExploration;
 
     try {
-      // Durante exploração de uma tarefa de edição existem ferramentas de leitura
-      // e escrita no mesmo lote. O antigo guard textual do provider não pode tratar
-      // uma resposta exploratória como falha de mutação; a máquina de fases do
-      // orquestrador é a autoridade para decidir quando escrever é obrigatório.
       if (suppressLegacyMutationGuard && state.mutations === 0) state.mutations = 1;
 
       let request = { ...input, sessionId: key, tools };
@@ -197,7 +203,7 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
             ...(request.messages || []),
             {
               role: 'system',
-              content: 'Esta fase exige uma ação real. Responda somente com o JSON de chamada de UMA das ferramentas habilitadas; não produza prosa e não finalize sem ferramenta.'
+              content: 'O projeto ativo já está disponível. Esta fase exige UMA ação real com uma das ferramentas habilitadas. Não peça upload manual de arquivos do projeto e não finalize em prosa. Responda somente com o JSON de chamada da ferramenta e aguarde o resultado real.'
             }
           ]
         };
@@ -208,11 +214,15 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
         const error = new ProviderError(
           phase === 'verification'
             ? 'A rota não executou a verificação obrigatória do projeto.'
-            : 'A rota não executou a alteração obrigatória do projeto.',
+            : phase === 'mutation'
+              ? 'A rota não executou a alteração obrigatória do projeto.'
+              : 'A rota não executou a ferramenta obrigatória para continuar a tarefa no projeto ativo.',
           {
             providerId: this.id,
             category: 'model',
-            code: phase === 'verification' ? 'required_verification_missing' : 'project_action_missing',
+            code: phase === 'verification'
+              ? 'required_verification_missing'
+              : phase === 'mutation' ? 'project_action_missing' : 'required_project_tool_missing',
             retryable: false
           }
         );
