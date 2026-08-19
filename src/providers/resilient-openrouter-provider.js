@@ -2,16 +2,9 @@ import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { assertFreeOpenRouterModels } from '../core/policy.js';
 import { ProviderError } from '../core/errors.js';
 import { sanitizeModelText } from '../core/content-sanitizer.js';
-
-const MUTATION_TOOLS = new Set([
-  'write_project_file', 'replace_project_text', 'create_project_directory', 'move_project_path', 'delete_project_path'
-]);
+import { isProjectMutationTool, isProjectReadTool } from '../core/project-tool-policy.js';
 
 const now = () => Date.now();
-
-function normalizeText(value) {
-  return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-}
 
 function textContent(content) {
   if (typeof content === 'string') return content;
@@ -19,11 +12,10 @@ function textContent(content) {
   return '';
 }
 
-function wantsProjectMutation(messages, tools) {
-  if (!tools.some(tool => MUTATION_TOOLS.has(tool?.function?.name))) return false;
-  const latest = [...messages].reverse().find(message => message.role === 'user');
-  const text = normalizeText(textContent(latest?.content));
-  return /\b(crie|criar|adicione|adicionar|altere|alterar|atualize|atualizar|corrija|corrigir|conserte|implemente|implementar|remova|remover|deletar|mova|mover|renomeie|renomear|ajuste|ajustar|edite|editar|fix|create|update|change|implement|remove|delete|move|rename|edit)\b/.test(text);
+function wantsProjectMutation(_messages, tools = []) {
+  const hasMutation = tools.some(tool => isProjectMutationTool(tool));
+  const hasRead = tools.some(tool => isProjectReadTool(tool));
+  return hasMutation && !hasRead;
 }
 
 function stableJson(value) {
@@ -101,21 +93,102 @@ function stripJsonFence(value) {
   return fenced ? fenced[1].trim() : text;
 }
 
-function parseTextToolCall(content, tools) {
-  const source = stripJsonFence(content);
-  if (!source.startsWith('{') || !source.endsWith('}')) return [];
-  let parsed;
-  try { parsed = JSON.parse(source); } catch { return []; }
-  const name = String(parsed.tool || parsed.name || parsed.function?.name || '').trim();
-  const allowed = new Set((tools || []).map(tool => tool?.function?.name).filter(Boolean));
-  if (!allowed.has(name)) return [];
-  const args = parsed.arguments ?? parsed.args ?? parsed.function?.arguments ?? {};
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
+const TEXT_TOOL_ALIASES = Object.freeze({
+  read_file: 'read_project_file',
+  read_project_file: 'read_project_file',
+  search_file: 'search_project',
+  search_project: 'search_project',
+  search: 'search_project',
+  write_file: 'write_project_file',
+  write_project_file: 'write_project_file',
+  replace_text: 'replace_project_text',
+  replace_project_text: 'replace_project_text',
+  create_directory: 'create_project_directory',
+  create_project_directory: 'create_project_directory',
+  move_path: 'move_project_path',
+  move_project_path: 'move_project_path',
+  delete_path: 'delete_project_path',
+  delete_project_path: 'delete_project_path',
+  run_check: 'run_project_check',
+  run_project_check: 'run_project_check'
+});
+
+function textToolCall(name, args) {
   return [{
     id: `genesis-text-tool-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     type: 'function',
-    function: { name, arguments: JSON.stringify(args) }
+    function: { name, arguments: JSON.stringify(args || {}) }
   }];
+}
+
+function normalizedToolName(value, allowed) {
+  const raw = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+  const name = TEXT_TOOL_ALIASES[raw] || raw;
+  return allowed.has(name) ? name : '';
+}
+
+function parseJsonToolCall(source, allowed) {
+  if (!source.startsWith('{') || !source.endsWith('}')) return [];
+  let parsed;
+  try { parsed = JSON.parse(source); } catch { return []; }
+  const name = normalizedToolName(parsed.tool || parsed.name || parsed.function?.name, allowed);
+  if (!name) return [];
+  const args = parsed.arguments ?? parsed.args ?? parsed.function?.arguments ?? {};
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
+  return textToolCall(name, args);
+}
+
+function positionalToolArguments(name, value) {
+  const clean = String(value || '').trim().replace(/^['"]|['"]$/g, '');
+  if (!clean) return null;
+  if (name === 'read_project_file') return { path: clean };
+  if (name === 'search_project') return { query: clean };
+  if (name === 'run_project_check') return { check: clean };
+  return null;
+}
+
+export function parseTextToolCall(content, tools = []) {
+  const source = stripJsonFence(content);
+  const allowed = new Set(tools.map(tool => tool?.function?.name).filter(Boolean));
+  const json = parseJsonToolCall(source, allowed);
+  if (json.length) return json;
+
+  const paired = source.match(/^<\s*([a-zA-Z0-9_-]+)\s*>([\s\S]*?)<\s*\/\s*\1\s*>$/);
+  if (paired) {
+    const name = normalizedToolName(paired[1], allowed);
+    if (!name) return [];
+    const payload = paired[2].trim();
+    if (payload.startsWith('{') && payload.endsWith('}')) {
+      try {
+        const args = JSON.parse(payload);
+        if (args && typeof args === 'object' && !Array.isArray(args)) return textToolCall(name, args);
+      } catch { return []; }
+    }
+    const args = positionalToolArguments(name, payload);
+    return args ? textToolCall(name, args) : [];
+  }
+
+  const compact = source.match(/^<\s*([a-zA-Z0-9_-]+)(?:\s+([^<>]*?))?\s*\/?>$/);
+  if (!compact) return [];
+  const name = normalizedToolName(compact[1], allowed);
+  if (!name) return [];
+  const payload = String(compact[2] || '').trim();
+  if (payload.startsWith('{') && payload.endsWith('}')) {
+    try {
+      const args = JSON.parse(payload);
+      if (args && typeof args === 'object' && !Array.isArray(args)) return textToolCall(name, args);
+    } catch { return []; }
+  }
+  const args = positionalToolArguments(name, payload);
+  return args ? textToolCall(name, args) : [];
+}
+
+function looksLikeKnownTextToolMarkup(content, tools = []) {
+  const source = stripJsonFence(content);
+  const match = source.match(/^<\s*([a-zA-Z0-9_-]+)/);
+  if (!match) return false;
+  const allowed = new Set(tools.map(tool => tool?.function?.name).filter(Boolean));
+  return Boolean(normalizedToolName(match[1], allowed));
 }
 
 function toolProtocol(tools) {
@@ -125,7 +198,7 @@ function toolProtocol(tools) {
     description: tool.function.description,
     parameters: tool.function.parameters
   }));
-  return `MODO DE FERRAMENTAS COMPATÍVEL DO GÊNESIS\nQuando precisar usar uma ferramenta, responda SOMENTE com um JSON válido, sem markdown e sem explicação, exatamente assim:\n{"tool":"nome_da_ferramenta","arguments":{}}\nExecute apenas UMA ferramenta por resposta e aguarde o resultado real.\nFerramentas permitidas:\n${JSON.stringify(definitions)}\nNunca afirme que alterou ou verificou algo sem receber o resultado real da ferramenta.`;
+  return `MODO DE FERRAMENTAS COMPATÍVEL DO GÊNESIS\nO projeto ativo já está disponível pelas ferramentas abaixo. Nunca peça ao usuário para reenviar um arquivo que pode ser localizado ou lido com estas ferramentas.\nQuando precisar usar uma ferramenta, responda SOMENTE com um JSON válido, sem markdown e sem explicação, exatamente assim:\n{"tool":"nome_da_ferramenta","arguments":{}}\nExecute apenas UMA ferramenta por resposta e aguarde o resultado real.\nFerramentas permitidas:\n${JSON.stringify(definitions)}\nNunca afirme que alterou ou verificou algo sem receber o resultado real da ferramenta.`;
 }
 
 function insertSystemMessage(messages, content) {
@@ -216,9 +289,6 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
   }
 
   resetAllRoutes() {
-    // Chamado pelo setApiKey() (classe-pai) quando a chave é trocada:
-    // limpa falhas/cooldown de todas as rotas que falharam, pois uma chave
-    // nova significa que a quota anterior não se aplica mais.
     const timestamp = now();
     for (const state of this.routeHealth.values()) {
       state.failures = 0;
@@ -294,13 +364,9 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
 
   async resolveCandidates(mode, requirements = {}, options = {}) {
     if (!this.canAttempt()) return null;
-    // Limpa automaticamente cooldowns que já expiraram para garantir
-    // que o usuário não fique preso em uma sessão com rotas bloqueadas.
     const timestamp = now();
     for (const state of this.routeHealth.values()) {
-      if (state.cooldownUntil > 0 && state.cooldownUntil <= timestamp) {
-        state.cooldownUntil = 0;
-      }
+      if (state.cooldownUntil > 0 && state.cooldownUntil <= timestamp) state.cooldownUntil = 0;
     }
     let catalog = [];
     try {
@@ -350,8 +416,8 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
 
   cleanupSessions() {
     const expiry = now() - 30 * 60 * 1000;
-    for (const [sessionId, state] of this.sessionTools) {
-      if (state.updatedAt < expiry) this.sessionTools.delete(sessionId);
+    for (const [sessionId, session] of this.sessionTools) {
+      if (session.updatedAt < expiry) this.sessionTools.delete(sessionId);
     }
     if (this.sessionTools.size <= 100) return;
     const oldest = [...this.sessionTools.entries()]
@@ -366,9 +432,9 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
     if (!this.sessionTools.has(key)) {
       this.sessionTools.set(key, { completed: new Map(), journal: [], mutations: 0, updatedAt: now() });
     }
-    const state = this.sessionTools.get(key);
-    state.updatedAt = now();
-    return state;
+    const session = this.sessionTools.get(key);
+    session.updatedAt = now();
+    return session;
   }
 
   captureToolResults(messages, state) {
@@ -398,7 +464,7 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
       };
       state.completed.set(signature, { call, result, entry });
       state.journal.push(entry);
-      if (entry.ok && MUTATION_TOOLS.has(entry.tool)) state.mutations += 1;
+      if (entry.ok && isProjectMutationTool(entry.tool)) state.mutations += 1;
     }
     state.updatedAt = now();
   }
@@ -446,8 +512,6 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
     const useTextTools = tools.length > 0 && candidate.supportsTools === false;
     if (useTextTools) preparedMessages = prepareTextToolMessages(preparedMessages, tools);
     const requestTools = useTextTools ? [] : tools;
-    // Cada chamada HTTP precisa permanecer visível e contabilizada pelo
-    // orquestrador. Fallback entre modelos substitui retries ocultos.
     const maxAttempts = 1;
     let result = await this.requestWithRetry({
       candidate,
@@ -466,11 +530,17 @@ export class ResilientOpenRouterProvider extends OpenAICompatibleProvider {
     if (useTextTools) {
       const toolCalls = parseTextToolCall(result.content, tools);
       if (toolCalls.length) result = { ...result, content: '', toolCalls, finishReason: 'tool_calls' };
+      else if (looksLikeKnownTextToolMarkup(result.content, tools)) {
+        const error = new ProviderError('O modelo tentou chamar uma ferramenta em texto, mas os argumentos não puderam ser validados com segurança.', {
+          providerId: this.id,
+          category: 'model',
+          code: 'invalid_text_tool_markup',
+          retryable: false
+        });
+        error.usage = result.usage;
+        throw error;
+      }
     }
-
-    // Chamadas repetidas voltam ao orquestrador. Ele reconhece a assinatura,
-    // devolve um resultado compacto ao modelo e faz a proxima inferencia como
-    // uma requisicao visivel. O provider nunca cria uma chamada HTTP oculta.
 
     if (wantsProjectMutation(messages, tools) && !result.toolCalls?.length && state.mutations === 0) {
       const error = new ProviderError('A rota respondeu sem executar a alteração solicitada no projeto.', {

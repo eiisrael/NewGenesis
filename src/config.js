@@ -34,7 +34,7 @@ export function createConfig(root = process.cwd()) {
   assertFreeOpenRouterModels(openRouterModels);
 
   return {
-    version: '2.2.0',
+    version: '2.3.0',
     root,
     host: process.env.GENESIS_HOST || '127.0.0.1',
     port: toInt(process.env.GENESIS_PORT, 7331, 1, 65535),
@@ -45,8 +45,8 @@ export function createConfig(root = process.cwd()) {
     outputTokenBudget: toInt(process.env.GENESIS_OUTPUT_TOKEN_BUDGET, 8192, 256, 32768),
     maxRoutesPerMessage: toInt(process.env.GENESIS_MAX_ROUTES_PER_MESSAGE, 4, 1, 6),
     maxRequestsPerMessage: toInt(process.env.GENESIS_MAX_REQUESTS_PER_MESSAGE, 5, 1, 12),
-    // Tarefas agentic usam um orçamento maior que respostas comuns. O contrato
-    // específico da tarefa continua impondo o teto real (8/10/14 por complexidade).
+    // O contrato da tarefa controla o teto efetivo. Tarefas comuns de edição
+    // permanecem econômicas e tarefas de alta complexidade podem usar até 14 chamadas.
     maxToolRequestsPerMessage: toInt(process.env.GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE, 14, 2, 16),
     maxToolRounds: toInt(process.env.GENESIS_MAX_TOOL_ROUNDS, 12, 1, 12),
     maxMessageCharacters: toInt(process.env.GENESIS_MAX_MESSAGE_CHARACTERS, 120000, 20000, 500000),
