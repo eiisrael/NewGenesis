@@ -86,11 +86,16 @@ export function prepareAgenticToolRequest(body = {}) {
   const forceInitialSearch = !hasToolResult
     && ['mixed', 'exploration'].includes(phase)
     && names.includes('search_project');
+  const forceAgentAction = hasToolResult
+    && phase === 'mixed'
+    && names.some(name => isProjectMutationTool(name));
   return {
     ...body,
     tool_choice: forceInitialSearch
       ? { type: 'function', function: { name: 'search_project' } }
-      : projectToolChoice(body.tools),
+      : forceAgentAction
+        ? 'required'
+        : projectToolChoice(body.tools),
     parallel_tool_calls: allowParallelProjectToolCalls(body.tools, true)
   };
 }
