@@ -1,7 +1,14 @@
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { ResilientOpenRouterProvider } from './resilient-openrouter-provider.js';
 import { ProviderError } from '../core/errors.js';
-import { projectToolCallRequired, projectToolPhase } from '../core/project-tool-policy.js';
+import {
+  allowParallelProjectToolCalls,
+  isProjectMutationTool,
+  isProjectReadTool,
+  projectToolCallRequired,
+  projectToolChoice,
+  projectToolPhase
+} from '../core/project-tool-policy.js';
 
 function textContent(content) {
   if (typeof content === 'string') return content;
@@ -15,6 +22,34 @@ function taskFingerprint(messages) {
   const latestUser = latestUserIndex >= 0 ? textContent(dialogue[latestUserIndex].content) : '';
   const previous = latestUserIndex > 0 ? textContent(dialogue[latestUserIndex - 1].content) : '';
   return `${latestUser.slice(0, 4000)}\nPREVIOUS:${previous.slice(-2000)}`;
+}
+
+function fingerprintId(value) {
+  let hash = 2166136261;
+  for (const character of String(value || '')) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function successfulReadEvidence(messages = []) {
+  let count = 0;
+  for (const message of messages) {
+    if (message?.role !== 'tool' || !isProjectReadTool(message?.name)) continue;
+    let result = null;
+    try { result = JSON.parse(String(message.content || '{}')); } catch { /* resultado compacto inválido não conta */ }
+    if (result?.ok !== true) continue;
+    if (message.name === 'search_project' && Array.isArray(result.matches) && result.matches.length === 0) continue;
+    count += 1;
+  }
+  return count;
+}
+
+export function agenticToolsForMessages(tools = [], messages = []) {
+  if (projectToolPhase(tools) !== 'mixed' || successfulReadEvidence(messages) < 2) return tools;
+  const mutations = tools.filter(tool => isProjectMutationTool(tool));
+  return mutations.length ? mutations : tools;
 }
 
 function wait(milliseconds, signal) {
@@ -41,6 +76,23 @@ function wait(milliseconds, signal) {
     if (signal?.aborted) abort();
     else signal?.addEventListener('abort', abort, { once: true });
   });
+}
+
+export function prepareAgenticToolRequest(body = {}) {
+  if (!Array.isArray(body.tools) || !body.tools.length) return body;
+  const phase = projectToolPhase(body.tools);
+  const names = body.tools.map(tool => tool?.function?.name).filter(Boolean);
+  const hasToolResult = (body.messages || []).some(message => message?.role === 'tool');
+  const forceInitialSearch = !hasToolResult
+    && ['mixed', 'exploration'].includes(phase)
+    && names.includes('search_project');
+  return {
+    ...body,
+    tool_choice: forceInitialSearch
+      ? { type: 'function', function: { name: 'search_project' } }
+      : projectToolChoice(body.tools),
+    parallel_tool_calls: allowParallelProjectToolCalls(body.tools, true)
+  };
 }
 
 export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
@@ -73,6 +125,25 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
     return state;
   }
 
+  // O orquestrador já carrega a continuidade canônica entre rotas. Duplicá-la
+  // novamente no provider fazia o mesmo resultado de ferramenta ocupar contexto
+  // duas vezes e aumentava o custo de cada rodada subsequente.
+  continuityMessage() {
+    return '';
+  }
+
+  async requestJson(url, options = {}, timeoutMs) {
+    if (String(url).endsWith('/chat/completions') && options.body) {
+      try {
+        const body = prepareAgenticToolRequest(JSON.parse(options.body));
+        options = { ...options, body: JSON.stringify(body) };
+      } catch {
+        // O parser/validador normal do provider continua sendo a fonte de erro.
+      }
+    }
+    return OpenAICompatibleProvider.prototype.requestJson.call(this, url, options, timeoutMs);
+  }
+
   async requestWithRetry(input, attempts) {
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -92,19 +163,41 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
   }
 
   async generate(input) {
-    const key = String(input.sessionId || 'default');
-    const tools = input.tools || [];
+    const fingerprint = taskFingerprint(input.messages || []);
+    const baseSessionId = String(input.sessionId || 'default');
+    const key = `${baseSessionId}:task:${fingerprintId(fingerprint)}`;
+    const suppliedTools = input.tools || [];
+    const suppliedPhase = projectToolPhase(suppliedTools);
+    const tools = agenticToolsForMessages(suppliedTools, input.messages || []);
+    const enoughExploration = tools !== suppliedTools;
     const phase = projectToolPhase(tools);
     const required = projectToolCallRequired(tools);
-    this.activeTaskFingerprints.set(key, taskFingerprint(input.messages || []));
+    this.activeTaskFingerprints.set(key, fingerprint);
+    const state = this.sessionState(key);
+    const previousMutationCount = state.mutations;
+    const suppressLegacyMutationGuard = suppliedPhase === 'mixed' && !enoughExploration;
+
     try {
-      // Em fases obrigatórias de escrita/verificação usamos o protocolo textual
-      // estrito mesmo quando a rota declara suporte nativo a tools. Isso evita
-      // que provedores gratuitos tratem tool_choice=auto como permissão para
-      // responder em prosa e gastar todo o orçamento sem agir.
-      const request = required
-        ? { ...input, candidate: { ...input.candidate, supportsTools: false } }
-        : input;
+      // Durante exploração de uma tarefa de edição existem ferramentas de leitura
+      // e escrita no mesmo lote. O antigo guard textual do provider não pode tratar
+      // uma resposta exploratória como falha de mutação; a máquina de fases do
+      // orquestrador é a autoridade para decidir quando escrever é obrigatório.
+      if (suppressLegacyMutationGuard && state.mutations === 0) state.mutations = 1;
+
+      let request = { ...input, sessionId: key, tools };
+      if (required && input.candidate?.supportsTools === false) {
+        request = {
+          ...request,
+          messages: [
+            ...(request.messages || []),
+            {
+              role: 'system',
+              content: 'Esta fase exige uma ação real. Responda somente com o JSON de chamada de UMA das ferramentas habilitadas; não produza prosa e não finalize sem ferramenta.'
+            }
+          ]
+        };
+      }
+
       const result = await super.generate(request);
       if (required && !result.toolCalls?.length) {
         const error = new ProviderError(
@@ -123,6 +216,7 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
       }
       return result;
     } finally {
+      if (suppressLegacyMutationGuard) state.mutations = previousMutationCount;
       this.activeTaskFingerprints.delete(key);
     }
   }

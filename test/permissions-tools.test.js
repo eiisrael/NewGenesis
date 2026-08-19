@@ -41,7 +41,7 @@ test('solicita aprovação antes de gravar e respeita aprovar ou negar', async t
   assert.equal(await fs.readFile(path.join(projectDirectory, 'README.md'), 'utf8'), '# Depois\n');
 });
 
-test('permissão completa executa automaticamente sem remover o isolamento', async t => {
+test('permissão completa executa escrita e verificações automaticamente sem remover o isolamento', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-permissions-full-'));
   const dataDirectory = path.join(directory, 'data');
   const projectDirectory = path.join(directory, 'project');
@@ -49,6 +49,7 @@ test('permissão completa executa automaticamente sem remover o isolamento', asy
   await fs.mkdir(projectDirectory, { recursive: true });
   await fs.writeFile(path.join(projectDirectory, 'README.md'), '# Projeto\n');
   await fs.writeFile(path.join(projectDirectory, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
+  await fs.writeFile(path.join(projectDirectory, 'smoke.test.js'), 'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("ok", () => assert.equal(1, 1));\n');
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const projectStore = await new ProjectStore(dataDirectory).init();
   await projectStore.openPath(projectDirectory);
@@ -63,15 +64,10 @@ test('permissão completa executa automaticamente sem remover o isolamento', asy
   assert.equal(await fs.stat(path.join(projectDirectory, 'src', 'components')).then(stat => stat.isDirectory()), true);
 
   const events = [];
-  const command = executor.execute({ function: {
-    name: 'run_project_check', arguments: JSON.stringify({ check: 'tests' })
+  const command = await executor.execute({ function: {
+    name: 'run_project_check', arguments: JSON.stringify({ check: 'auto' })
   } }, { conversationId: 'conversation', onEvent: (event, payload) => events.push({ event, payload }) });
-  for (let attempt = 0; attempt < 30 && !events.some(item => item.event === 'approval_required'); attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  const approval = events.find(item => item.event === 'approval_required');
-  assert.ok(approval);
-  assert.match(approval.payload.detail, /npm test/);
-  approvalManager.decide(approval.payload.approvalId, 'deny');
-  assert.equal((await command).denied, true);
+  assert.equal(command.ok, true);
+  assert.equal(events.some(item => item.event === 'approval_required'), false);
+  assert.match(command.command, /npm(?:\.cmd)? test/);
 });

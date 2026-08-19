@@ -80,10 +80,9 @@ export function projectToolCallRequired(tools = []) {
   return ['mutation', 'verification'].includes(projectToolPhase(tools));
 }
 
-export function allowParallelProjectToolCalls(tools = [], providerSupportsParallel = false) {
-  if (!providerSupportsParallel) return false;
-  const names = tools.map(projectToolName).filter(Boolean);
-  // Leitura paginada, mutações e verificações precisam ser sequenciais para que
-  // cada nova decisão veja o resultado real da etapa anterior.
-  return names.length > 1 && names.every(name => name === 'search_project');
+export function allowParallelProjectToolCalls(_tools = [], _providerSupportsParallel = false) {
+  // Um agente de engenharia precisa observar o resultado real da etapa anterior
+  // antes de decidir a próxima. Isso também impede leituras paginadas sobrepostas,
+  // mutações concorrentes e explosões de contexto com vários resultados de uma vez.
+  return false;
 }

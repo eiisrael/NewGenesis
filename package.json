@@ -1,7 +1,7 @@
 {
   "name": "genesis-new",
-  "version": "2.1.0",
-  "description": "Agente local com SupremeMind, contexto contínuo, roteamento inteligente e orçamento rígido de modelos gratuitos.",
+  "version": "2.2.0",
+  "description": "Agente local genérico com SupremeMind, contexto contínuo, execução agentic verificável e roteamento inteligente entre modelos gratuitos.",
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",

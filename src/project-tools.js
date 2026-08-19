@@ -29,37 +29,37 @@ const functionTool = (name, description, properties, required = []) => ({
 });
 
 export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
-  functionTool('read_project_file', 'Leia somente o trecho necessário de um arquivo de texto do projeto ativo. Use caminhos relativos e prefira search_project para localizar a região antes de paginar arquivos grandes.', {
-    path: { type: 'string', description: 'Caminho relativo, por exemplo src/app.js.' },
-    start_line: { type: 'integer', minimum: 1, description: 'Primeira linha, padrão 1.' },
-    end_line: { type: 'integer', minimum: 1, description: 'Última linha, limitada a 400 linhas por leitura.' }
-  }, ['path']),
-  functionTool('search_project', 'Pesquise texto nos arquivos indexados do projeto antes de decidir uma leitura longa ou alteração.', {
-    query: { type: 'string', description: 'Texto, função, seletor, classe ou identificador a localizar.' },
+  functionTool('search_project', 'Localize rapidamente símbolos, seletores, funções ou texto antes de ler arquivos grandes. Você pode passar termos alternativos separados por | em uma única busca. O resultado já inclui contexto ao redor das ocorrências, então só leia o arquivo se ainda faltar informação para editar.', {
+    query: { type: 'string', description: 'Texto ou alternativas separadas por |, por exemplo renderTerrain|drawMap|biome.' },
     path: { type: 'string', description: 'Prefixo de pasta opcional para limitar a busca.' }
   }, ['query']),
-  functionTool('write_project_file', 'Crie ou substitua um arquivo de texto no projeto. Envie sempre o conteúdo completo final.', {
+  functionTool('read_project_file', 'Leia somente o trecho ainda necessário de um arquivo. Prefira search_project primeiro; evite varrer o arquivo inteiro e não releia faixas já conhecidas.', {
+    path: { type: 'string', description: 'Caminho relativo, por exemplo src/app.js.' },
+    start_line: { type: 'integer', minimum: 1, description: 'Primeira linha, padrão 1.' },
+    end_line: { type: 'integer', minimum: 1, description: 'Última linha; a ferramenta limita cada leitura a no máximo 220 linhas.' }
+  }, ['path']),
+  functionTool('write_project_file', 'Crie ou substitua um arquivo de texto no projeto. Use para arquivo novo ou quando uma substituição localizada não for adequada. Envie o conteúdo completo final.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo.' },
     content: { type: 'string', description: 'Conteúdo completo que será gravado.' }
   }, ['path', 'content']),
-  functionTool('replace_project_text', 'Altere um trecho exato de um arquivo existente sem reenviar o arquivo inteiro. Prefira esta ferramenta para edições pequenas ou em arquivos grandes.', {
+  functionTool('replace_project_text', 'Edite um trecho exato de um arquivo existente. Prefira esta ferramenta para mudanças localizadas: reduz risco, tokens e preserva código não relacionado.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo existente.' },
     old_text: { type: 'string', minLength: 1, maxLength: 32000, description: 'Trecho atual exato que será substituído.' },
     new_text: { type: 'string', maxLength: 32000, description: 'Novo trecho que entrará no lugar.' },
     expected_replacements: { type: 'integer', minimum: 1, maximum: 100, description: 'Quantidade exata esperada de ocorrências; padrão 1.' }
   }, ['path', 'old_text', 'new_text']),
-  functionTool('create_project_directory', 'Crie uma pasta dentro do projeto ativo.', {
+  functionTool('create_project_directory', 'Crie uma pasta dentro do projeto ativo quando a implementação realmente precisar dela.', {
     path: { type: 'string', description: 'Caminho relativo da nova pasta.' }
   }, ['path']),
   functionTool('move_project_path', 'Renomeie ou mova um arquivo ou pasta dentro do projeto ativo.', {
     from: { type: 'string', description: 'Caminho relativo atual.' },
     to: { type: 'string', description: 'Novo caminho relativo.' }
   }, ['from', 'to']),
-  functionTool('delete_project_path', 'Exclua um arquivo ou pasta dentro do projeto ativo somente quando o pedido exigir.', {
+  functionTool('delete_project_path', 'Exclua um arquivo ou pasta dentro do projeto ativo somente quando o pedido exigir explicitamente remoção.', {
     path: { type: 'string', description: 'Caminho relativo a excluir.' }
   }, ['path']),
-  functionTool('run_project_check', 'Execute uma verificação segura e conhecida no projeto, sem shell arbitrário.', {
-    check: { type: 'string', enum: ['tests', 'lint', 'build', 'status', 'diff'], description: 'Verificação desejada.' }
+  functionTool('run_project_check', 'Verifique a alteração com uma rotina segura e conhecida. Use auto para escolher automaticamente o melhor teste/lint/build/check disponível no projeto.', {
+    check: { type: 'string', enum: ['auto', 'tests', 'lint', 'build', 'status', 'diff'], description: 'Verificação desejada; prefira auto após editar.' }
   }, ['check'])
 ]);
 
@@ -77,29 +77,72 @@ function toolError(message, code = 'project_tool_error') {
 
 function parseArguments(value) {
   if (value && typeof value === 'object') return value;
-  try { return JSON.parse(String(value || '{}')); } catch { throw toolError('O modelo enviou argumentos de ferramenta inválidos.', 'invalid_tool_arguments'); }
+  try { return JSON.parse(String(value || '{}')); }
+  catch { throw toolError('O modelo enviou argumentos de ferramenta inválidos.', 'invalid_tool_arguments'); }
 }
 
-function commandFor(root, check) {
+async function exists(target) {
+  return fs.access(target).then(() => true).catch(() => false);
+}
+
+function usefulNpmScript(source) {
+  const value = String(source || '').trim();
+  return value && !/no test specified|not implemented|todo/i.test(value);
+}
+
+async function packageScripts(root) {
+  try { return JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))?.scripts || {}; }
+  catch (error) {
+    if (error.code === 'ENOENT' || error.name === 'SyntaxError') return {};
+    throw error;
+  }
+}
+
+async function automaticCommand(root) {
   const windows = process.platform === 'win32';
   const executable = name => windows && name === 'npm' ? 'npm.cmd' : name;
-  if (check === 'status') return { program: 'git', args: ['status', '--short'] };
-  if (check === 'diff') return { program: 'git', args: ['diff', '--stat'] };
-  return fs.readFile(path.join(root, 'package.json'), 'utf8').then(source => {
-    const scripts = JSON.parse(source)?.scripts || {};
-    if (check === 'tests' && scripts.test) return { program: executable('npm'), args: ['test'], preview: `npm test → ${redactText(scripts.test, 500)}` };
-    if (check === 'lint' && scripts.lint) return { program: executable('npm'), args: ['run', 'lint'], preview: `npm run lint → ${redactText(scripts.lint, 500)}` };
-    if (check === 'build' && scripts.build) return { program: executable('npm'), args: ['run', 'build'], preview: `npm run build → ${redactText(scripts.build, 500)}` };
-    throw toolError(`O projeto não possui uma rotina “${check}” reconhecida.`, 'project_check_unavailable');
-  }).catch(async error => {
-    if (error.code !== 'ENOENT') throw error;
-    const exists = async name => fs.access(path.join(root, name)).then(() => true).catch(() => false);
-    if (check === 'tests' && await exists('pyproject.toml')) return { program: 'python', args: ['-m', 'pytest'] };
-    if (check === 'tests' && await exists('Cargo.toml')) return { program: 'cargo', args: ['test'] };
-    if (check === 'build' && await exists('Cargo.toml')) return { program: 'cargo', args: ['check'] };
-    if (check === 'tests' && await exists('go.mod')) return { program: 'go', args: ['test', './...'] };
-    throw toolError(`O projeto não possui uma rotina “${check}” reconhecida.`, 'project_check_unavailable');
-  });
+  const scripts = await packageScripts(root);
+  for (const [name, args] of [
+    ['test', ['test']],
+    ['lint', ['run', 'lint']],
+    ['build', ['run', 'build']],
+    ['typecheck', ['run', 'typecheck']],
+    ['check', ['run', 'check']]
+  ]) {
+    if (usefulNpmScript(scripts[name])) {
+      return { program: executable('npm'), args, preview: `npm ${args.join(' ')} → ${redactText(scripts[name], 500)}`, detected: name };
+    }
+  }
+  if (await exists(path.join(root, 'pyproject.toml')) || await exists(path.join(root, 'pytest.ini'))) {
+    return { program: 'python', args: ['-m', 'pytest'], preview: 'python -m pytest', detected: 'tests' };
+  }
+  if (await exists(path.join(root, 'Cargo.toml'))) {
+    return { program: 'cargo', args: ['test'], preview: 'cargo test', detected: 'tests' };
+  }
+  if (await exists(path.join(root, 'go.mod'))) {
+    return { program: 'go', args: ['test', './...'], preview: 'go test ./...', detected: 'tests' };
+  }
+  if (await exists(path.join(root, '.git'))) {
+    return { program: 'git', args: ['diff', '--check'], preview: 'git diff --check', detected: 'diff' };
+  }
+  throw toolError('Nenhuma rotina automática segura de teste, lint, build ou diff foi detectada neste projeto.', 'project_check_unavailable');
+}
+
+async function commandFor(root, check) {
+  const windows = process.platform === 'win32';
+  const executable = name => windows && name === 'npm' ? 'npm.cmd' : name;
+  if (check === 'auto') return automaticCommand(root);
+  if (check === 'status') return { program: 'git', args: ['status', '--short'], preview: 'git status --short', detected: 'status' };
+  if (check === 'diff') return { program: 'git', args: ['diff', '--check'], preview: 'git diff --check', detected: 'diff' };
+  const scripts = await packageScripts(root);
+  if (check === 'tests' && usefulNpmScript(scripts.test)) return { program: executable('npm'), args: ['test'], preview: `npm test → ${redactText(scripts.test, 500)}`, detected: 'tests' };
+  if (check === 'lint' && usefulNpmScript(scripts.lint)) return { program: executable('npm'), args: ['run', 'lint'], preview: `npm run lint → ${redactText(scripts.lint, 500)}`, detected: 'lint' };
+  if (check === 'build' && usefulNpmScript(scripts.build)) return { program: executable('npm'), args: ['run', 'build'], preview: `npm run build → ${redactText(scripts.build, 500)}`, detected: 'build' };
+  if (check === 'tests' && (await exists(path.join(root, 'pyproject.toml')) || await exists(path.join(root, 'pytest.ini')))) return { program: 'python', args: ['-m', 'pytest'], preview: 'python -m pytest', detected: 'tests' };
+  if (check === 'tests' && await exists(path.join(root, 'Cargo.toml'))) return { program: 'cargo', args: ['test'], preview: 'cargo test', detected: 'tests' };
+  if (check === 'build' && await exists(path.join(root, 'Cargo.toml'))) return { program: 'cargo', args: ['check'], preview: 'cargo check', detected: 'build' };
+  if (check === 'tests' && await exists(path.join(root, 'go.mod'))) return { program: 'go', args: ['test', './...'], preview: 'go test ./...', detected: 'tests' };
+  throw toolError(`O projeto não possui uma rotina “${check}” reconhecida.`, 'project_check_unavailable');
 }
 
 function operationSummary(name, args) {
@@ -109,8 +152,34 @@ function operationSummary(name, args) {
   if (name === 'move_project_path') return { title: 'Mover ou renomear', detail: `${args.from} → ${args.to}`, kind: 'move' };
   if (name === 'delete_project_path') return { title: 'Excluir do projeto', detail: args.path, kind: 'delete' };
   if (name === 'run_project_check') return { title: 'Executar verificação', detail: args.check, kind: 'command' };
-  if (name === 'read_project_file') return { title: 'Lendo arquivo', detail: args.path, kind: 'read' };
+  if (name === 'read_project_file') return { title: 'Lendo trecho', detail: args.path, kind: 'read' };
   return { title: 'Pesquisando no projeto', detail: args.query, kind: 'read' };
+}
+
+function searchTerms(value) {
+  return [...new Set(String(value || '').split('|').map(item => item.trim()).filter(Boolean))].slice(0, 6);
+}
+
+async function contextualizeMatches(projectStore, matches) {
+  const cache = new Map();
+  const output = [];
+  for (const match of matches.slice(0, 8)) {
+    let source = cache.get(match.path);
+    if (source === undefined) {
+      try { source = await projectStore.readText(match.path); }
+      catch { source = ''; }
+      cache.set(match.path, source);
+    }
+    const lines = String(source || '').split(/\r?\n/);
+    const startLine = Math.max(1, Number(match.line || 1) - 4);
+    const endLine = Math.min(lines.length, Number(match.line || 1) + 4);
+    const raw = lines.slice(startLine - 1, endLine)
+      .map((line, index) => `${startLine + index}: ${line}`)
+      .join('\n');
+    const context = sanitizeModelText(raw, { maxCharacters: 900, maxLineCharacters: 700 }).text;
+    output.push({ ...match, startLine, endLine, context });
+  }
+  return output;
 }
 
 export class ProjectToolExecutor {
@@ -129,17 +198,17 @@ export class ProjectToolExecutor {
     if (!PROJECT_TOOL_DEFINITIONS.some(tool => tool.function.name === name)) {
       return { ok: false, error: 'Ferramenta desconhecida.', code: 'unknown_project_tool' };
     }
-
     if (privileged && !this.projectStore.summary()?.writable) {
       return { ok: false, error: 'Abra o projeto em modo editável para permitir alterações.', code: 'project_read_only' };
     }
-
     if (name === 'run_project_check' && this.projectStore.summary()?.writable) {
       const command = await commandFor(this.projectStore.rootPath(), args.check);
       operation.detail = command.preview || [command.program, ...command.args].join(' ');
     }
 
-    if (privileged && (this.permissionStore.mode === 'ask' || name === 'run_project_check')) {
+    // O modo "full" é realmente autônomo para todas as ferramentas seguras já
+    // limitadas pelo executor. O modo "ask" continua exigindo aprovação humana.
+    if (privileged && this.permissionStore.mode === 'ask') {
       const approval = this.approvalManager.request({ conversationId, operation, signal });
       onEvent('approval_required', { approvalId: approval.id, ...operation });
       const decision = await approval.promise;
@@ -164,17 +233,34 @@ export class ProjectToolExecutor {
 
   async run(name, args, signal) {
     if (signal?.aborted) throw toolError('Solicitação interrompida.', 'request_cancelled');
+    if (name === 'search_project') {
+      const queries = searchTerms(args.query);
+      if (!queries.length) throw toolError('Informe ao menos um termo de busca.', 'invalid_search_query');
+      const dedupe = new Map();
+      for (const query of queries) {
+        const found = await this.projectStore.search(query, { path: args.path, limit: 16 });
+        for (const match of found) {
+          const key = `${String(match.path).toLowerCase()}:${match.line}`;
+          if (!dedupe.has(key)) dedupe.set(key, { ...match, matchedQuery: query });
+          if (dedupe.size >= 18) break;
+        }
+        if (dedupe.size >= 18) break;
+      }
+      const matches = await contextualizeMatches(this.projectStore, [...dedupe.values()]);
+      return {
+        queries,
+        matches,
+        summary: `${matches.length} ocorrência${matches.length === 1 ? '' : 's'} contextualizada${matches.length === 1 ? '' : 's'} para ${queries.length} termo${queries.length === 1 ? '' : 's'}.`
+      };
+    }
     if (name === 'read_project_file') {
       const content = await this.projectStore.readText(args.path);
       const lines = content.split(/\r?\n/);
       const startLine = Math.max(1, Number(args.start_line || 1));
-      const endLine = Math.min(lines.length, Math.max(startLine, Number(args.end_line || startLine + 399)), startLine + 399);
+      const requestedEnd = Number(args.end_line || startLine + 159);
+      const endLine = Math.min(lines.length, Math.max(startLine, requestedEnd), startLine + 219);
       const rawExcerpt = lines.slice(startLine - 1, endLine).join('\n');
-      // 10K mantém o JSON da ferramenta dentro do orçamento do agente e evita
-      // reenviar blocos enormes a cada rodada. Os números de linha continuam
-      // disponíveis para uma leitura seguinte precisa.
-      const sanitized = sanitizeModelText(rawExcerpt, { maxCharacters: 10_000, maxLineCharacters: 2_500 });
-      const excerpt = sanitized.text;
+      const sanitized = sanitizeModelText(rawExcerpt, { maxCharacters: 8_000, maxLineCharacters: 2_000 });
       const truncated = sanitized.changed || endLine < lines.length;
       return {
         path: args.path,
@@ -182,16 +268,12 @@ export class ProjectToolExecutor {
         endLine,
         nextStartLine: endLine < lines.length ? endLine + 1 : null,
         totalLines: lines.length,
-        content: excerpt,
+        content: sanitized.text,
         truncated,
         omittedOpaqueCharacters: sanitized.removedOpaqueCharacters,
         omittedDataUris: sanitized.dataUriCount,
         summary: `${args.path} · linhas ${startLine}-${endLine}${endLine < lines.length ? ` de ${lines.length}` : ''}. Próxima linha: ${endLine < lines.length ? endLine + 1 : 'fim'}.`
       };
-    }
-    if (name === 'search_project') {
-      const matches = await this.projectStore.search(args.query, { path: args.path, limit: 24 });
-      return { matches, summary: `${matches.length} ocorrência${matches.length === 1 ? '' : 's'} encontrada${matches.length === 1 ? '' : 's'}.` };
     }
     if (name === 'write_project_file') {
       await this.projectStore.writeText(args.path, args.content);
@@ -215,18 +297,27 @@ export class ProjectToolExecutor {
     }
     if (name === 'run_project_check') {
       const root = this.projectStore.rootPath();
-      const command = await commandFor(root, args.check);
+      const command = await commandFor(root, args.check || 'auto');
       const { stdout, stderr } = await execFileAsync(command.program, command.args, {
         cwd: root,
         windowsHide: true,
-        timeout: 90000,
+        timeout: 120000,
         maxBuffer: 1024 * 1024,
         encoding: 'utf8',
         signal,
         env: safeCommandEnvironment()
       });
-      const output = `${stdout || ''}${stderr ? `\n${stderr}` : ''}`.trim().slice(-24000);
-      return { check: args.check, command: [command.program, ...command.args].join(' '), output, summary: `Verificação “${args.check}” concluída.` };
+      const output = sanitizeModelText(`${stdout || ''}${stderr ? `\n${stderr}` : ''}`.trim(), {
+        maxCharacters: 18_000,
+        maxLineCharacters: 2_500
+      }).text;
+      return {
+        check: args.check || 'auto',
+        detectedCheck: command.detected || args.check,
+        command: [command.program, ...command.args].join(' '),
+        output,
+        summary: `Verificação “${command.detected || args.check || 'auto'}” concluída com sucesso.`
+      };
     }
     throw toolError('Ferramenta desconhecida.', 'unknown_project_tool');
   }

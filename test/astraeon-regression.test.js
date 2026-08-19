@@ -173,7 +173,7 @@ test('orçamento cumulativo bloqueia a próxima requisição antes de exceder to
   });
 });
 
-test('leitura do projeto limita 400 linhas e 16K, remove base64 e informa a próxima página', async t => {
+test('leitura do projeto limita 220 linhas e 8K, remove base64 e informa a próxima página', async t => {
   const { store } = await writableFixture(t, { longLines: true });
   const executor = new ProjectToolExecutor({
     projectStore: store,
@@ -189,11 +189,11 @@ test('leitura do projeto limita 400 linhas e 16K, remove base64 e informa a pró
 
   assert.equal(result.ok, true);
   assert.equal(result.startLine, 1);
-  assert.equal(result.endLine, 400);
-  assert.ok(result.endLine - result.startLine + 1 <= 400);
-  assert.equal(result.nextStartLine, 401);
+  assert.equal(result.endLine, 220);
+  assert.ok(result.endLine - result.startLine + 1 <= 220);
+  assert.equal(result.nextStartLine, 221);
   assert.ok(result.totalLines > 800);
-  assert.ok(result.content.length <= 16_000, `trecho excedeu 16K: ${result.content.length}`);
+  assert.ok(result.content.length <= 8_000, `trecho excedeu 8K: ${result.content.length}`);
   assert.equal(result.omittedDataUris, 1);
   assert.ok(result.omittedOpaqueCharacters >= 90_000);
   assert.doesNotMatch(result.content, /data:image\/png;base64,/i);

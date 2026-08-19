@@ -34,7 +34,7 @@ export function createConfig(root = process.cwd()) {
   assertFreeOpenRouterModels(openRouterModels);
 
   return {
-    version: '2.1.0',
+    version: '2.2.0',
     root,
     host: process.env.GENESIS_HOST || '127.0.0.1',
     port: toInt(process.env.GENESIS_PORT, 7331, 1, 65535),
@@ -43,10 +43,12 @@ export function createConfig(root = process.cwd()) {
     discoveryTimeoutMs: toInt(process.env.GENESIS_DISCOVERY_TIMEOUT_MS, 6000, 1000, 30000),
     inputTokenBudget: toInt(process.env.GENESIS_INPUT_TOKEN_BUDGET, 12000, 2000, 128000),
     outputTokenBudget: toInt(process.env.GENESIS_OUTPUT_TOKEN_BUDGET, 8192, 256, 32768),
-    maxRoutesPerMessage: toInt(process.env.GENESIS_MAX_ROUTES_PER_MESSAGE, 3, 1, 6),
-    maxRequestsPerMessage: toInt(process.env.GENESIS_MAX_REQUESTS_PER_MESSAGE, 4, 1, 12),
-    maxToolRequestsPerMessage: toInt(process.env.GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE, 8, 2, 16),
-    maxToolRounds: toInt(process.env.GENESIS_MAX_TOOL_ROUNDS, 6, 1, 12),
+    maxRoutesPerMessage: toInt(process.env.GENESIS_MAX_ROUTES_PER_MESSAGE, 4, 1, 6),
+    maxRequestsPerMessage: toInt(process.env.GENESIS_MAX_REQUESTS_PER_MESSAGE, 5, 1, 12),
+    // Tarefas agentic usam um orçamento maior que respostas comuns. O contrato
+    // específico da tarefa continua impondo o teto real (8/10/14 por complexidade).
+    maxToolRequestsPerMessage: toInt(process.env.GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE, 14, 2, 16),
+    maxToolRounds: toInt(process.env.GENESIS_MAX_TOOL_ROUNDS, 12, 1, 12),
     maxMessageCharacters: toInt(process.env.GENESIS_MAX_MESSAGE_CHARACTERS, 120000, 20000, 500000),
     providers: {
       openrouter: {

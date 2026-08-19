@@ -1,6 +1,4 @@
-const MUTATION_TOOLS = new Set([
-  'write_project_file', 'replace_project_text', 'create_project_directory', 'move_project_path', 'delete_project_path'
-]);
+import { isProjectMutationTool, isProjectVerificationTool } from './project-tool-policy.js';
 
 function check(id, label, passed, detail, required = true) {
   return { id, label, passed: Boolean(passed), detail: String(detail || ''), required };
@@ -12,6 +10,7 @@ export function verifyTaskOutcome({ contract, response = {}, evidence = [], usag
   if (!new Set(['stop', 'tool_calls']).has(finishReason)) {
     response = { ...response, finishReason: 'partial' };
   }
+
   const checks = [
     check('answer-present', 'Resposta final presente', content.length > 0, content ? `${content.length} caracteres entregues.` : 'Nenhum conteúdo final foi produzido.'),
     check('answer-finished', 'Resposta concluída pelo modelo', !['length', 'partial'].includes(response.finishReason), ['length', 'partial'].includes(response.finishReason) ? 'A saída terminou por limite e foi marcada como parcial.' : `Motivo final: ${response.finishReason || 'local/stop'}.`)
@@ -32,10 +31,24 @@ export function verifyTaskOutcome({ contract, response = {}, evidence = [], usag
   }
 
   if (['change', 'fix'].includes(contract?.kind)) {
-    const mutation = evidence.find(item => MUTATION_TOOLS.has(item.tool) && item.ok === true);
-    const verification = evidence.find(item => item.tool === 'run_project_check' && item.ok === true);
-    checks.push(check('mutation-executed', 'Alteração real executada', Boolean(mutation), mutation?.summary || 'Nenhuma ferramenta de escrita confirmou alteração.'));
-    checks.push(check('verification-run', 'Verificação executada', Boolean(verification), verification?.summary || 'A alteração foi entregue sem teste/build/lint confirmado.', false));
+    const mutation = evidence.find(item => isProjectMutationTool(item?.tool) && item?.ok === true);
+    const mutationFailures = evidence.filter(item => isProjectMutationTool(item?.tool) && item?.ok !== true);
+    const verification = evidence.find(item => isProjectVerificationTool(item?.tool) && item?.ok === true);
+    checks.push(check(
+      'mutation-executed',
+      'Alteração real executada',
+      Boolean(mutation),
+      mutation?.summary || (mutationFailures.length
+        ? `${mutationFailures.length} tentativa(s) de alteração não foram confirmadas.`
+        : 'Nenhuma ferramenta de escrita confirmou alteração.')
+    ));
+    checks.push(check(
+      'verification-run',
+      'Verificação executada',
+      Boolean(verification),
+      verification?.summary || 'A alteração foi confirmada, mas não houve teste/build/lint/diff seguro concluído nesta execução.',
+      false
+    ));
   }
 
   const required = checks.filter(item => item.required);
