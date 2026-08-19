@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { redactText } from './telemetry.js';
 import { sanitizeModelText } from './core/content-sanitizer.js';
+import { isProjectPrivilegedTool } from './core/project-tool-policy.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,13 +29,13 @@ const functionTool = (name, description, properties, required = []) => ({
 });
 
 export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
-  functionTool('read_project_file', 'Leia um arquivo de texto do projeto ativo. Use caminhos relativos ao projeto.', {
+  functionTool('read_project_file', 'Leia somente o trecho necessário de um arquivo de texto do projeto ativo. Use caminhos relativos e prefira search_project para localizar a região antes de paginar arquivos grandes.', {
     path: { type: 'string', description: 'Caminho relativo, por exemplo src/app.js.' },
     start_line: { type: 'integer', minimum: 1, description: 'Primeira linha, padrão 1.' },
     end_line: { type: 'integer', minimum: 1, description: 'Última linha, limitada a 400 linhas por leitura.' }
   }, ['path']),
-  functionTool('search_project', 'Pesquise texto nos arquivos indexados do projeto antes de decidir uma alteração.', {
-    query: { type: 'string', description: 'Texto ou identificador a localizar.' },
+  functionTool('search_project', 'Pesquise texto nos arquivos indexados do projeto antes de decidir uma leitura longa ou alteração.', {
+    query: { type: 'string', description: 'Texto, função, seletor, classe ou identificador a localizar.' },
     path: { type: 'string', description: 'Prefixo de pasta opcional para limitar a busca.' }
   }, ['query']),
   functionTool('write_project_file', 'Crie ou substitua um arquivo de texto no projeto. Envie sempre o conteúdo completo final.', {
@@ -62,14 +63,10 @@ export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
   }, ['check'])
 ]);
 
-const MUTATING_TOOLS = new Set([
-  'write_project_file', 'replace_project_text', 'create_project_directory', 'move_project_path', 'delete_project_path', 'run_project_check'
-]);
-
 export function projectToolDefinitionsFor(contract, { writable = false } = {}) {
   const allowed = new Set(contract?.toolPolicy?.allowed || []);
   if (!writable) {
-    for (const name of MUTATING_TOOLS) allowed.delete(name);
+    for (const name of [...allowed]) if (isProjectPrivilegedTool(name)) allowed.delete(name);
   }
   return PROJECT_TOOL_DEFINITIONS.filter(tool => allowed.has(tool.function.name));
 }
@@ -127,13 +124,13 @@ export class ProjectToolExecutor {
     const name = String(toolCall?.function?.name || toolCall?.name || '');
     const args = parseArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
     const operation = operationSummary(name, args);
-    const mutating = MUTATING_TOOLS.has(name);
+    const privileged = isProjectPrivilegedTool(name);
 
     if (!PROJECT_TOOL_DEFINITIONS.some(tool => tool.function.name === name)) {
       return { ok: false, error: 'Ferramenta desconhecida.', code: 'unknown_project_tool' };
     }
 
-    if (mutating && !this.projectStore.summary()?.writable) {
+    if (privileged && !this.projectStore.summary()?.writable) {
       return { ok: false, error: 'Abra o projeto em modo editável para permitir alterações.', code: 'project_read_only' };
     }
 
@@ -142,7 +139,7 @@ export class ProjectToolExecutor {
       operation.detail = command.preview || [command.program, ...command.args].join(' ');
     }
 
-    if (mutating && (this.permissionStore.mode === 'ask' || name === 'run_project_check')) {
+    if (privileged && (this.permissionStore.mode === 'ask' || name === 'run_project_check')) {
       const approval = this.approvalManager.request({ conversationId, operation, signal });
       onEvent('approval_required', { approvalId: approval.id, ...operation });
       const decision = await approval.promise;
@@ -173,7 +170,10 @@ export class ProjectToolExecutor {
       const startLine = Math.max(1, Number(args.start_line || 1));
       const endLine = Math.min(lines.length, Math.max(startLine, Number(args.end_line || startLine + 399)), startLine + 399);
       const rawExcerpt = lines.slice(startLine - 1, endLine).join('\n');
-      const sanitized = sanitizeModelText(rawExcerpt, { maxCharacters: 16_000, maxLineCharacters: 3_000 });
+      // 10K mantém o JSON da ferramenta dentro do orçamento do agente e evita
+      // reenviar blocos enormes a cada rodada. Os números de linha continuam
+      // disponíveis para uma leitura seguinte precisa.
+      const sanitized = sanitizeModelText(rawExcerpt, { maxCharacters: 10_000, maxLineCharacters: 2_500 });
       const excerpt = sanitized.text;
       const truncated = sanitized.changed || endLine < lines.length;
       return {
@@ -186,7 +186,7 @@ export class ProjectToolExecutor {
         truncated,
         omittedOpaqueCharacters: sanitized.removedOpaqueCharacters,
         omittedDataUris: sanitized.dataUriCount,
-        summary: `${args.path} · linhas ${startLine}-${endLine}${endLine < lines.length ? ` de ${lines.length}` : ''}.`
+        summary: `${args.path} · linhas ${startLine}-${endLine}${endLine < lines.length ? ` de ${lines.length}` : ''}. Próxima linha: ${endLine < lines.length ? endLine + 1 : 'fim'}.`
       };
     }
     if (name === 'search_project') {

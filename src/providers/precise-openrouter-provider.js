@@ -1,5 +1,7 @@
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { ResilientOpenRouterProvider } from './resilient-openrouter-provider.js';
+import { ProviderError } from '../core/errors.js';
+import { projectToolCallRequired, projectToolPhase } from '../core/project-tool-policy.js';
 
 function textContent(content) {
   if (typeof content === 'string') return content;
@@ -91,9 +93,35 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
 
   async generate(input) {
     const key = String(input.sessionId || 'default');
-    this.activeTaskFingerprints.set(key, taskFingerprint(input.messages));
+    const tools = input.tools || [];
+    const phase = projectToolPhase(tools);
+    const required = projectToolCallRequired(tools);
+    this.activeTaskFingerprints.set(key, taskFingerprint(input.messages || []));
     try {
-      return await super.generate(input);
+      // Em fases obrigatórias de escrita/verificação usamos o protocolo textual
+      // estrito mesmo quando a rota declara suporte nativo a tools. Isso evita
+      // que provedores gratuitos tratem tool_choice=auto como permissão para
+      // responder em prosa e gastar todo o orçamento sem agir.
+      const request = required
+        ? { ...input, candidate: { ...input.candidate, supportsTools: false } }
+        : input;
+      const result = await super.generate(request);
+      if (required && !result.toolCalls?.length) {
+        const error = new ProviderError(
+          phase === 'verification'
+            ? 'A rota não executou a verificação obrigatória do projeto.'
+            : 'A rota não executou a alteração obrigatória do projeto.',
+          {
+            providerId: this.id,
+            category: 'model',
+            code: phase === 'verification' ? 'required_verification_missing' : 'project_action_missing',
+            retryable: false
+          }
+        );
+        error.usage = result.usage;
+        throw error;
+      }
+      return result;
     } finally {
       this.activeTaskFingerprints.delete(key);
     }
