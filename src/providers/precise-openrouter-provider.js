@@ -50,10 +50,11 @@ export function agenticToolsForMessages(tools = [], messages = []) {
   if (projectToolPhase(tools) !== 'mixed') return tools;
   const evidence = successfulReadEvidence(messages);
   if (evidence === 0) {
-    const search = tools.filter(tool => tool?.function?.name === 'search_project');
-    if (search.length) return search.slice(0, 1);
+    // A primeira rodada nunca escreve. Modelos com tool calling nativo recebem
+    // search_project como escolha forçada; modelos legados ainda podem devolver
+    // read_file e ter essa chamada recuperada com segurança.
     const reads = tools.filter(tool => isProjectReadTool(tool));
-    return reads.length ? reads.slice(0, 1) : tools;
+    return reads.length ? reads : tools;
   }
   if (evidence < 2) return tools;
   const mutations = tools.filter(tool => isProjectMutationTool(tool));

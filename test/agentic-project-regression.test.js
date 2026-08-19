@@ -10,9 +10,9 @@ const tools = [
   tool('search_project'), tool('read_project_file'), tool('replace_project_text'), tool('write_project_file')
 ];
 
-test('tarefa de edição começa com busca real mesmo em modelo sem tool calling nativo', () => {
+test('tarefa de edição começa somente com leitura e exige ação mesmo em modelo legado', () => {
   const effective = agenticToolsForMessages(tools, []);
-  assert.deepEqual(effective.map(item => item.function.name), ['search_project']);
+  assert.deepEqual(effective.map(item => item.function.name), ['search_project', 'read_project_file']);
   assert.equal(projectToolActionRequired(tools, effective), true);
 });
 
