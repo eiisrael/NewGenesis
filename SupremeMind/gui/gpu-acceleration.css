@@ -1,0 +1,75 @@
+/* SupremeMind GPU acceleration layer */
+html.sm-gpu-ui .workspace,
+html.sm-gpu-ui .sidebar,
+html.sm-gpu-ui .topbar,
+html.sm-gpu-ui .busy-overlay,
+html.sm-gpu-ui .core-visual,
+html.sm-gpu-ui .galaxy-panel,
+html.sm-gpu-ui canvas,
+html.sm-gpu-ui iframe {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+html.sm-gpu-ui .workspace,
+html.sm-gpu-ui .file-list,
+html.sm-gpu-ui .code-viewer,
+html.sm-gpu-ui .terminal,
+html.sm-gpu-ui .markdown-output {
+  contain: layout paint style;
+}
+
+html.sm-gpu-ui .core-pulse,
+html.sm-gpu-ui .orbit,
+html.sm-gpu-ui .node,
+html.sm-gpu-ui .sm-loader-spinner::after {
+  will-change: transform, opacity, background-position;
+}
+
+.sm-gpu-status {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid #263b58;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0d1728, #0a1120);
+  color: #91a4bf;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.sm-gpu-status strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #d8e9ff;
+  font-size: 10px;
+  letter-spacing: .4px;
+}
+
+.sm-gpu-status.is-active {
+  border-color: #276d73;
+  box-shadow: 0 0 20px #24d8ff16;
+}
+
+.sm-gpu-status.is-active strong { color: #59ecff; }
+.sm-gpu-status.is-fallback { border-color: #62522c; }
+.sm-gpu-status.is-fallback strong { color: #ffd56f; }
+
+.sm-gpu-status .sm-gpu-renderer {
+  display: block;
+  overflow: hidden;
+  color: #6f819d;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm-gpu-toast { border-left-color: #6b7cff !important; }
+
+@media (max-width: 1100px) {
+  .sm-gpu-status { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.sm-gpu-ui .core-pulse,
+  html.sm-gpu-ui .orbit,
+  html.sm-gpu-ui .node { will-change: auto; }
+}

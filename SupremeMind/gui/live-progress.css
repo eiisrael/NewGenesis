@@ -1,0 +1,260 @@
+/* Authoritative loading HUD. This file intentionally overrides every legacy loader rule. */
+.busy-overlay:not(.hidden){
+  padding:16px;
+  overflow:auto;
+}
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active{
+  position:relative!important;
+  width:min(640px,calc(100vw - 32px))!important;
+  min-height:0!important;
+  max-height:min(780px,calc(100vh - 32px))!important;
+  margin:auto!important;
+  padding:28px 30px 26px!important;
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:center!important;
+  gap:12px!important;
+  overflow:auto!important;
+  border:1px solid #2a4264!important;
+  border-radius:24px!important;
+  background:linear-gradient(155deg,#0c1629f7,#080d18fa)!important;
+  box-shadow:0 24px 90px #000c,0 0 70px #2ad8ff18!important;
+  animation:none!important;
+  counter-reset:none!important;
+  transform:none!important;
+}
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active::before,
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active::after{
+  content:none!important;
+  display:none!important;
+  animation:none!important;
+}
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active > *{
+  box-sizing:border-box;
+  transform:none;
+}
+.sm-loader-spinner{
+  --sm-progress-angle:0deg;
+  position:relative!important;
+  flex:0 0 96px!important;
+  width:96px!important;
+  height:96px!important;
+  display:grid!important;
+  place-items:center!important;
+  overflow:visible!important;
+  border:0!important;
+  border-radius:50%!important;
+  background:conic-gradient(#55eaff 0deg,#806cff var(--sm-progress-angle),#192840 var(--sm-progress-angle),#192840 360deg)!important;
+  box-shadow:0 0 32px #36dcff45,0 0 80px #6f62ff20!important;
+  animation:none!important;
+}
+.sm-loader-spinner::before{
+  content:""!important;
+  position:absolute!important;
+  inset:6px!important;
+  display:block!important;
+  border:1px solid #294566!important;
+  border-radius:50%!important;
+  background:radial-gradient(circle at 40% 30%,#11233a,#07101c 68%)!important;
+  animation:none!important;
+}
+.sm-loader-spinner::after{
+  content:""!important;
+  position:absolute!important;
+  inset:-5px!important;
+  display:block!important;
+  border:2px solid transparent!important;
+  border-top-color:#65ecff!important;
+  border-right-color:#8b73ff!important;
+  border-radius:50%!important;
+  opacity:.88!important;
+  animation:smLoaderOrbit 1.15s linear infinite!important;
+}
+@keyframes smLoaderOrbit{to{transform:rotate(360deg)}}
+.sm-real-percent{
+  position:relative!important;
+  inset:auto!important;
+  z-index:3!important;
+  width:auto!important;
+  height:auto!important;
+  display:block!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  color:#edfaff!important;
+  font:900 18px/1 Segoe UI,system-ui,sans-serif!important;
+  text-shadow:0 0 18px #55e9ff!important;
+  animation:none!important;
+  transform:none!important;
+}
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active #busyText{
+  width:100%!important;
+  margin:1px 0 0!important;
+  display:block!important;
+  color:#e9f4ff!important;
+  text-align:center!important;
+  font-size:18px!important;
+  line-height:1.25!important;
+  letter-spacing:.2px!important;
+}
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active #busyText::before{
+  content:"PROCESSAMENTO REAL"!important;
+  display:block!important;
+  margin-bottom:8px!important;
+  color:#55e5ff!important;
+  font-size:9px!important;
+  font-weight:900!important;
+  letter-spacing:2.1px!important;
+}
+.busy-overlay:not(.hidden) .loader-core.sm-real-progress-active #busyText::after{
+  content:none!important;
+  display:none!important;
+}
+.sm-progress-subtitle{
+  width:100%;
+  color:#7487a5;
+  text-align:center;
+  font-size:10px;
+  font-weight:600;
+  line-height:1.5;
+}
+.sm-progress-meta{
+  width:100%!important;
+  margin-top:4px!important;
+  display:grid!important;
+  gap:7px!important;
+  color:#91a5c0!important;
+  font-size:11px!important;
+  animation:none!important;
+}
+.sm-progress-meta > p{
+  width:100%!important;
+  min-width:0!important;
+  height:auto!important;
+  margin:0!important;
+  padding:0!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:space-between!important;
+  gap:14px!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  animation:none!important;
+  transform:none!important;
+}
+.sm-progress-stage{
+  min-width:0;
+  overflow:hidden;
+  color:#dceaff;
+  font-weight:800;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.sm-progress-count,
+.sm-progress-elapsed{
+  flex:0 0 auto;
+  font-family:Consolas,Monaco,monospace;
+}
+.sm-progress-count{color:#5de8ff}
+.sm-progress-elapsed{color:#778ba8}
+.sm-progress-current{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.sm-real-track{
+  position:relative!important;
+  width:100%!important;
+  height:15px!important;
+  margin-top:4px!important;
+  display:block!important;
+  overflow:hidden!important;
+  border:1px solid #2d4464!important;
+  border-radius:999px!important;
+  background:#050a12!important;
+  box-shadow:inset 0 2px 9px #000b!important;
+  animation:none!important;
+}
+.sm-real-fill{
+  position:absolute!important;
+  inset:2px auto 2px 2px!important;
+  width:0;
+  max-width:calc(100% - 4px)!important;
+  display:block!important;
+  border-radius:999px!important;
+  background:linear-gradient(90deg,#18bdf4,#64edff 52%,#816cff)!important;
+  box-shadow:0 0 18px #43ddff8a!important;
+  transition:width .16s linear!important;
+}
+.sm-progress-indeterminate .sm-loader-spinner::after{animation-duration:.72s!important}
+.sm-progress-indeterminate .sm-real-fill::after{
+  content:"";
+  position:absolute;
+  inset:0;
+  border-radius:inherit;
+  background:linear-gradient(100deg,transparent 0%,#ffffff00 28%,#ffffffa6 48%,#ffffff00 68%,transparent 100%);
+  background-size:220% 100%;
+  animation:smMeasuredStageShimmer 1.2s linear infinite;
+}
+@keyframes smMeasuredStageShimmer{from{background-position:180% 0}to{background-position:-130% 0}}
+.sm-progress-complete .sm-loader-spinner{background:conic-gradient(#4ce8a7 0deg,#6cf0ba 360deg)!important}
+.sm-progress-complete .sm-real-fill{background:linear-gradient(90deg,#36d99c,#66f1bb)!important;box-shadow:0 0 20px #45efa775!important}
+.sm-progress-error .sm-loader-spinner{background:conic-gradient(#ff5f7e 0deg,#a72449 max(var(--sm-progress-angle),18deg),#352035 max(var(--sm-progress-angle),18deg),#352035 360deg)!important}
+.sm-progress-error .sm-real-fill{min-width:100%!important;background:linear-gradient(90deg,#a72449,#ff5f7e)!important;box-shadow:0 0 20px #ff5f7e6e!important}
+.sm-progress-error .sm-real-percent{color:#ff9caf!important;text-shadow:0 0 18px #ff5f7e!important}
+.sm-progress-details{
+  width:100%!important;
+  margin-top:3px!important;
+  overflow:hidden!important;
+  border:1px solid #243754!important;
+  border-radius:12px!important;
+  background:#080e19!important;
+  animation:none!important;
+}
+.sm-progress-details summary{
+  min-height:42px;
+  padding:0 12px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  cursor:pointer;
+  list-style:none;
+  color:#c9d8eb;
+  font-size:11px;
+  font-weight:800;
+  user-select:none;
+}
+.sm-progress-details summary::-webkit-details-marker{display:none}
+.sm-progress-details summary::before{content:"▸";margin-right:7px;color:#54e4ff;transition:transform .18s ease}
+.sm-progress-details[open] summary::before{transform:rotate(90deg)}
+.sm-progress-details summary span{margin-right:auto}
+.sm-log-badge{min-width:27px;padding:3px 7px;border-radius:999px;background:#14243a;color:#64e7ff;text-align:center;font:800 9px/1.3 Consolas,monospace}
+.sm-progress-console-head{
+  min-height:34px;
+  padding:0 10px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  border-top:1px solid #1d2d46;
+  border-bottom:1px solid #1d2d46;
+  background:#0d1625;
+}
+.sm-progress-console-head span{color:#667b98;font-size:8px;font-weight:900;letter-spacing:1.5px}
+.sm-progress-console-head button{padding:4px 8px;border:1px solid #2a3d59;border-radius:7px;background:#111c2e;color:#9eb0c9;font-size:9px}
+.sm-progress-console{height:min(280px,32vh);margin:0;padding:12px;overflow:auto;background:#04070c;color:#a9f1d0;white-space:pre-wrap;word-break:break-word;font:10px/1.55 Consolas,Monaco,monospace;scrollbar-color:#28425f #060b12}
+.sm-progress-console::selection{background:#315977;color:white}
+@media(max-width:640px){
+  .busy-overlay:not(.hidden) .loader-core.sm-real-progress-active{width:calc(100vw - 20px)!important;max-height:calc(100vh - 20px)!important;padding:22px 18px!important}
+  .sm-progress-meta > p{align-items:flex-start!important;flex-direction:column!important;gap:3px!important}
+  .sm-progress-count,.sm-progress-elapsed{align-self:flex-end}
+  .sm-progress-console{height:240px}
+}
+@media(prefers-reduced-motion:reduce){
+  .sm-loader-spinner::after{animation-duration:2.4s!important}
+  .sm-real-fill{transition:none!important}
+  .sm-progress-indeterminate .sm-real-fill::after{animation-duration:2.5s}
+}

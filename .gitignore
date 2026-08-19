@@ -1,0 +1,6 @@
+.genesis/
+.suprememind/
+node_modules/
+*.log
+*.tmp
+*.tgz

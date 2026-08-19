@@ -1,0 +1,100 @@
+SUPREMEMIND — O QUE ELE É E QUAL É O SEU PODER REAL
+===================================================
+
+Resumo
+------
+O SupremeMind é a camada de inteligência estrutural local do Genesis. Ele não é
+um modelo de linguagem e não substitui uma IA. Seu papel é transformar um projeto
+em um mapa pesquisável de arquivos, símbolos, dependências, chamadas, importância
+e histórico. Assim, o modelo recebe somente o contexto relevante, em vez de todo
+o projeto. Isso reduz tokens, melhora a precisão e torna decisões verificáveis.
+
+Capacidades implementadas
+-------------------------
+1. Indexação incremental
+   - Lê arquivos textuais e de código compatíveis.
+   - Calcula hash de cada arquivo e reutiliza o que não mudou.
+   - Ignora dependências, builds, caches, binários e arquivos sensíveis.
+   - Remove data URIs, base64 opaco e credenciais antes de criar trechos.
+
+2. Compreensão de código e interface
+   - Reconhece JavaScript, TypeScript, Python, C/C++, C#, JSON, Markdown e texto.
+   - Nesta versão também compreende HTML, scripts inline, eventos, CSS, SCSS,
+     seletores, variáveis, YAML e referências de assets.
+   - Extrai símbolos, funções, classes, IDs, eventos, imports e chamadas.
+
+3. Busca híbrida local
+   - Busca lexical BM25 para termos exatos.
+   - Vetores locais determinísticos para similaridade aproximada.
+   - Relevância por caminho, trecho, símbolo, memória e centralidade do grafo.
+   - Retorna o melhor trecho com linhas, sem carregar o arquivo inteiro.
+
+4. Grafo de conhecimento do projeto
+   - Liga arquivos por imports, chamadas e coalterações do Git.
+   - Calcula PageRank para descobrir arquivos centrais.
+   - Agrupa arquivos em “bacias de atração”: partes que tendem a depender ou mudar
+     juntas.
+   - Permite navegar entradas, saídas e órbitas ao redor de qualquer arquivo.
+
+5. Contexto hierárquico L0/L1/L2
+   - L0: núcleo mais relevante para a pergunta.
+   - L1: arquivos diretamente prioritários.
+   - L2: apoio estrutural e relações secundárias.
+   - Respeita um orçamento de tokens e nunca inclui mais contexto do que o teto.
+
+6. Análise de impacto
+   - Mostra quem depende do arquivo que será alterado.
+   - Percorre dependências em profundidade controlada.
+   - Produz risco LOW, MODERATE, HIGH ou CRITICAL com evidências do grafo.
+
+7. Memória de projeto
+   - Registra decisões, tarefas, arquivos e tags localmente.
+   - Reaproveita essas memórias como afinidade em pesquisas futuras.
+   - A memória não é o histórico bruto da conversa; é conhecimento selecionado.
+
+8. Cockpit Neural
+   - Exibe o grafo real, tarefas, etapas, consumo, eventos e saúde do índice.
+   - Permite indexar/reindexar, buscar contexto, analisar impacto e órbita,
+     consultar arquivos e registrar memória sem usar prompts de IA.
+
+Como isso melhora o Genesis
+---------------------------
+- Evita enviar o projeto inteiro a cada requisição.
+- Ajuda o roteador a escolher contexto e modelo conforme a intenção.
+- Reduz alucinações porque caminhos, símbolos e relações vêm de dados locais.
+- Preserva continuidade entre modelos sem repetir blobs e resultados enormes.
+- Dá ao verificador evidências reais para confirmar leitura, edição e teste.
+- Torna análise de projetos grandes progressiva e mensurável.
+
+Proteções desta versão
+----------------------
+- Índice seguro versão 3; índices antigos precisam ser recriados.
+- Bloqueio de .env, credenciais, certificados, chaves e formatos não textuais.
+- Configuração limitada: dimensões, tamanho de arquivo, arquivos de contexto e Git
+  não podem solicitar alocações ilimitadas.
+- Índices carregados são validados por tamanho, caminho, schema, vetores, chunks e
+  quantidade de arestas.
+- HTML com imagens base64 guarda somente um marcador local, nunca o blob.
+
+Limites honestos
+----------------
+- O SupremeMind não “pensa” sozinho e não garante que um código esteja correto.
+- A extração de símbolos usa análise leve, não um compilador completo para todas
+  as linguagens.
+- Similaridade vetorial local é econômica, mas menos semântica que embeddings
+  especializados.
+- Análise de impacto indica probabilidade estrutural; testes continuam necessários.
+- Código gerado dinamicamente pode criar relações invisíveis à análise estática.
+
+Fluxo recomendado
+-----------------
+1. Abra a pasta do projeto no Genesis.
+2. Na área Neural, inicialize/reindexe o SupremeMind.
+3. Consulte o grafo ou faça uma busca antes de alterações grandes.
+4. Peça a mudança no chat; o Genesis selecionará ferramentas e modelo pelo contrato.
+5. Verifique tarefas, evidências, tokens e resultado no cockpit Neural.
+6. Reindexe após alterações extensas para atualizar símbolos e relações.
+
+Em uma frase: o modelo fornece raciocínio generativo; o SupremeMind fornece memória,
+estrutura, relevância e evidência local para que esse raciocínio seja mais econômico,
+preciso e auditável.

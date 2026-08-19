@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'">
+  <title>Genesis • Cockpit Neural</title>
+  <link rel="stylesheet" href="./neural.css">
+</head>
+<body>
+  <div class="boot-screen" id="bootScreen" role="status" aria-live="polite">
+    <div class="boot-core" aria-hidden="true"><span></span><span></span><span></span></div>
+    <strong>Preparando Cockpit Neural</strong>
+    <small id="bootMessage">Conectando ao Genesis local…</small>
+  </div>
+
+  <header class="topbar">
+    <div class="brand" aria-label="Genesis Cockpit Neural">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>Genesis</strong><small>Cockpit Neural</small></span>
+    </div>
+    <div class="project-pill" id="projectPill">
+      <span class="project-pulse" aria-hidden="true"></span>
+      <span><small>Projeto ativo</small><strong id="projectName">Nenhum projeto</strong></span>
+    </div>
+    <div class="topbar-actions">
+      <span class="connection-badge connecting" id="connectionBadge" role="status"><i></i><span>Conectando</span></span>
+      <button class="icon-button activity-toggle" id="activityToggle" type="button" aria-label="Abrir atividade ao vivo" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m5 13v-7m5 7V3"/></svg>
+        <span id="unseenBadge" hidden>0</span>
+      </button>
+      <button class="icon-button help-button" id="helpButton" type="button" aria-label="Abrir Ajuda Neural" title="Ajuda Neural">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.7 9a2.5 2.5 0 0 1 4.8 1c0 1.8-2.5 2-2.5 4M12 17h.01"/></svg>
+      </button>
+      <button class="icon-button" id="refreshButton" type="button" aria-label="Atualizar dados" title="Atualizar dados">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M18.5 9A7 7 0 0 0 6 6.5L4 9m2 6a7 7 0 0 0 12 2.5L20 15"/></svg>
+      </button>
+      <button class="icon-button" id="closeButton" type="button" aria-label="Fechar Cockpit Neural" title="Fechar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="cockpit-shell" id="cockpitShell">
+    <nav class="view-nav" aria-label="Áreas do Cockpit Neural">
+      <button class="nav-item active" type="button" data-view="overview" aria-label="Visão geral" aria-current="page"><span aria-hidden="true">◈</span><span>Visão geral</span></button>
+      <button class="nav-item" type="button" data-view="execution" aria-label="Execução"><span aria-hidden="true">⌁</span><span>Execução</span></button>
+      <button class="nav-item" type="button" data-view="graph" aria-label="Grafo"><span aria-hidden="true">✦</span><span>Grafo</span></button>
+      <button class="nav-item" type="button" data-view="context" aria-label="Contexto"><span aria-hidden="true">≡</span><span>Contexto</span></button>
+      <button class="nav-item" type="button" data-view="impact" aria-label="Impacto"><span aria-hidden="true">⌬</span><span>Impacto</span></button>
+      <button class="nav-item" type="button" data-view="memory" aria-label="Memória"><span aria-hidden="true">◎</span><span>Memória</span></button>
+      <button class="nav-item" type="button" data-view="diagnostics" aria-label="Diagnóstico"><span aria-hidden="true">⚡</span><span>Diagnóstico</span></button>
+      <div class="nav-index-state" id="navIndexState">
+        <span class="status-dot"></span>
+        <span><strong>SupremeMind</strong><small id="navIndexLabel">Sem projeto</small></span>
+      </div>
+    </nav>
+
+    <main class="workspace" id="workspace">
+      <section class="view active" id="view-overview" aria-labelledby="overviewTitle">
+        <header class="view-heading">
+          <div><span class="eyebrow">SISTEMA EM TEMPO REAL</span><h1 id="overviewTitle">Visão geral</h1><p>Estado do projeto, da tarefa e do orçamento em uma única leitura.</p></div>
+          <button class="primary-button" id="indexButton" type="button"><span>Indexar projeto</span></button>
+        </header>
+
+        <div class="notice-card empty" id="projectNotice" role="status">
+          <span class="notice-icon" aria-hidden="true">⌁</span>
+          <span><strong id="projectNoticeTitle">Abra um projeto no painel principal</strong><small id="projectNoticeText">O Cockpit Neural acompanhará o projeto ativo automaticamente.</small></span>
+        </div>
+
+        <div class="index-progress" id="indexProgress" hidden aria-live="polite">
+          <div><strong id="indexProgressTitle">Indexando projeto</strong><span id="indexProgressValue">0%</span></div>
+          <progress class="progress-track" max="100" value="0" id="indexProgressBar">0%</progress>
+          <small id="indexProgressFile">Preparando arquivos…</small>
+        </div>
+
+        <div class="overview-grid">
+          <article class="panel task-card">
+            <header class="panel-heading"><span><small>TAREFA ATUAL</small><strong id="taskStatusTitle">Aguardando solicitação</strong></span><span class="state-badge idle" id="taskStateBadge">Inativo</span></header>
+            <p id="taskStatusDetail">Envie uma mensagem no chat principal para acompanhar o fluxo aqui.</p>
+            <div class="task-route"><span><small>Modelo</small><strong id="taskModel">Automático</strong></span><span><small>Tempo</small><strong id="taskElapsed">0 ms</strong></span></div>
+          </article>
+
+          <article class="panel budget-card">
+            <header class="panel-heading"><span><small>ORÇAMENTO DA TAREFA</small><strong>Consumo rastreado</strong></span><span class="accuracy-badge" id="usageAccuracy">Sem dados</span></header>
+            <div class="budget-metrics">
+              <span><small>Enviados</small><strong id="metricInput">0</strong></span>
+              <span><small>Recebidos</small><strong id="metricOutput">0</strong></span>
+              <span><small>Total</small><strong id="metricTotal">0</strong></span>
+              <span><small>Requests</small><strong id="metricRequests">0</strong></span>
+            </div>
+            <div class="budget-secondary"><span id="metricFallbacks">0 fallbacks</span><span id="metricTools">0 ferramentas</span></div>
+          </article>
+        </div>
+
+        <div class="stats-grid" aria-label="Estatísticas do índice">
+          <article><small>ARQUIVOS</small><strong id="statFiles">—</strong><span>indexados</span></article>
+          <article><small>SÍMBOLOS</small><strong id="statSymbols">—</strong><span>detectados</span></article>
+          <article><small>ARESTAS</small><strong id="statEdges">—</strong><span>relações</span></article>
+          <article><small>BACIAS</small><strong id="statBasins">—</strong><span>domínios</span></article>
+          <article><small>TOKENS</small><strong id="statTokens">—</strong><span>no projeto</span></article>
+          <article><small>GIT</small><strong id="statGit">—</strong><span>commits lidos</span></article>
+        </div>
+
+        <div class="overview-grid lower-grid">
+          <article class="panel project-card">
+            <header class="panel-heading"><span><small>PROJETO ATIVO</small><strong id="projectCardName">Nenhum projeto</strong></span></header>
+            <dl class="detail-list">
+              <div><dt>Arquivos visíveis</dt><dd id="projectFileCount">—</dd></div>
+              <div><dt>Linhas</dt><dd id="projectLineCount">—</dd></div>
+              <div><dt>Tamanho</dt><dd id="projectSize">—</dd></div>
+              <div><dt>Tecnologias</dt><dd id="projectTech">—</dd></div>
+              <div><dt>Arquitetura local</dt><dd id="projectArchitecture">—</dd></div>
+              <div><dt>Pontos de entrada</dt><dd id="projectEntrypoints">—</dd></div>
+            </dl>
+          </article>
+          <article class="panel index-card">
+            <header class="panel-heading"><span><small>SUPREMEMIND</small><strong id="indexCardTitle">Índice indisponível</strong></span><span class="state-badge idle" id="indexStateBadge">Inativo</span></header>
+            <p id="indexCardDetail">Abra e indexe um projeto para ativar busca, contexto, grafo e impacto.</p>
+            <small class="timestamp" id="indexGeneratedAt">Nunca indexado</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-execution" aria-labelledby="executionTitle" hidden>
+        <header class="view-heading"><div><span class="eyebrow">RUNTIME GENESIS</span><h1 id="executionTitle">Execução</h1><p>Cada módulo acende somente quando um evento real o toca.</p></div><button class="secondary-button" id="resetRuntimeButton" type="button">Limpar estados</button></header>
+        <article class="panel runtime-panel">
+          <div class="runtime-legend"><span><i class="idle"></i>Inativo</span><span><i class="processing"></i>Processando</span><span><i class="complete"></i>Concluído</span><span><i class="waiting"></i>Aguardando</span><span><i class="error"></i>Erro</span></div>
+          <div class="runtime-flow" id="runtimeFlow" aria-label="Fluxo interno do Genesis"></div>
+        </article>
+        <article class="panel execution-log-panel"><header class="panel-heading"><span><small>ETAPAS DA TAREFA</small><strong>Rastro verificável</strong></span></header><ol class="execution-log" id="executionLog"><li class="empty-row">Nenhuma tarefa executada nesta sessão.</li></ol></article>
+      </section>
+
+      <section class="view" id="view-graph" aria-labelledby="graphTitle" hidden>
+        <header class="view-heading"><div><span class="eyebrow">MAPA ESTRUTURAL</span><h1 id="graphTitle">Grafo do projeto</h1><p>Busque arquivos, explore relações e abra a órbita de um nó.</p></div></header>
+        <div class="graph-toolbar">
+          <label class="search-field"><span class="sr-only">Consulta do grafo</span><input id="graphQuery" type="search" placeholder="Ex.: player, renderização, inventário"><kbd>Enter</kbd></label>
+          <button class="primary-button" id="graphSearchButton" type="button">Buscar</button>
+          <div class="zoom-controls" aria-label="Controles do grafo"><button type="button" id="zoomOutButton" aria-label="Diminuir zoom">−</button><button type="button" id="zoomResetButton" aria-label="Restaurar zoom">100%</button><button type="button" id="zoomInButton" aria-label="Aumentar zoom">+</button></div>
+        </div>
+        <div class="graph-layout">
+          <article class="panel graph-stage" id="graphStage">
+            <div class="graph-empty" id="graphEmpty"><span aria-hidden="true">✦</span><strong>O mapa estrutural aparecerá aqui</strong><small>Indexe o projeto e faça uma busca para carregar arquivos e relações reais.</small></div>
+            <svg id="projectGraph" viewBox="-500 -350 1000 700" role="img" aria-label="Grafo estrutural do projeto" hidden></svg>
+            <div class="graph-legend"><span><i class="dependency"></i>Dependência</span><span><i class="call"></i>Chamada</span><span><i class="co-change"></i>Coalteração</span></div>
+          </article>
+          <aside class="panel node-inspector" id="nodeInspector" aria-live="polite">
+            <span class="inspector-empty">Selecione um nó para ver sua órbita.</span>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-context" aria-labelledby="contextTitle" hidden>
+        <header class="view-heading"><div><span class="eyebrow">CONTEXTO CONTROLADO</span><h1 id="contextTitle">Contexto para IA</h1><p>Veja quais arquivos o SupremeMind escolheria e quanto cada um consome.</p></div></header>
+        <article class="panel tool-form">
+          <label for="contextQuery">Tarefa ou pergunta</label>
+          <textarea id="contextQuery" rows="3" placeholder="Ex.: explique como o jogo persiste o progresso do jogador"></textarea>
+          <div class="form-row budget-row"><label for="contextBudget">Orçamento de tokens <strong id="contextBudgetValue">6.000</strong></label><input id="contextBudget" type="range" min="1000" max="20000" step="500" value="6000"><button class="primary-button" id="contextButton" type="button">Montar contexto</button></div>
+        </article>
+        <div class="context-grid">
+          <article class="panel"><header class="panel-heading"><span><small>ARQUIVOS SELECIONADOS</small><strong id="contextSelectionTitle">Nenhuma consulta</strong></span></header><div class="selected-files" id="contextFiles"><p class="empty-row">Os níveis L0, L1 e L2 aparecerão aqui.</p></div></article>
+          <article class="panel context-preview"><header class="panel-heading"><span><small>PREVIEW</small><strong>Contexto estruturado</strong></span><button class="text-button" id="copyContextButton" type="button" disabled>Copiar</button></header><pre id="contextPreview">Nenhum contexto gerado.</pre></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-impact" aria-labelledby="impactTitle" hidden>
+        <header class="view-heading"><div><span class="eyebrow">RAIO DE MUDANÇA</span><h1 id="impactTitle">Impacto e órbita</h1><p>Descubra quem depende de um arquivo antes de alterá-lo.</p></div></header>
+        <article class="panel tool-form compact-form">
+          <label for="impactPath">Arquivo do índice</label>
+          <div class="form-row"><input id="impactPath" list="knownFilePaths" placeholder="src/game/player.js"><datalist id="knownFilePaths"></datalist><label class="depth-field">Profundidade <input id="impactDepth" type="number" min="1" max="10" value="3"></label><button class="danger-button" id="impactButton" type="button">Analisar impacto</button><button class="primary-button" id="orbitButton" type="button">Mapear órbita</button></div>
+        </article>
+        <div class="impact-grid">
+          <article class="panel"><header class="panel-heading"><span><small>IMPACTO</small><strong>Raio de explosão</strong></span><span class="risk-badge idle" id="impactRisk">—</span></header><div class="structured-output" id="impactOutput"><p class="empty-row">Nenhuma análise executada.</p></div></article>
+          <article class="panel"><header class="panel-heading"><span><small>ÓRBITA</small><strong>Entradas e saídas</strong></span></header><div class="structured-output" id="orbitOutput"><p class="empty-row">Nenhuma órbita carregada.</p></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-memory" aria-labelledby="memoryTitleHeading" hidden>
+        <header class="view-heading"><div><span class="eyebrow">CONHECIMENTO PERSISTENTE</span><h1 id="memoryTitleHeading">Memória do projeto</h1><p>Registre decisões úteis para as próximas tarefas.</p></div><button class="secondary-button" id="refreshMemoriesButton" type="button">Atualizar memórias</button></header>
+        <div class="memory-grid">
+          <article class="panel memory-form">
+            <label for="memoryTitle">Título</label><input id="memoryTitle" placeholder="Decisão arquitetural">
+            <label for="memoryContent">Conteúdo</label><textarea id="memoryContent" rows="6" placeholder="O que o Genesis deve lembrar?"></textarea>
+            <label for="memoryFiles">Arquivos relacionados</label><input id="memoryFiles" placeholder="src/a.js, src/b.js">
+            <div class="form-row"><label>Tags<input id="memoryTags" placeholder="render, gameplay"></label><label>Status<select id="memoryStatus"><option value="recorded">Registrada</option><option value="success">Validada</option><option value="warning">Atenção</option><option value="deprecated">Depreciada</option></select></label></div>
+            <button class="primary-button full-button" id="saveMemoryButton" type="button">Salvar memória</button>
+          </article>
+          <article class="panel memory-browser"><label class="search-field"><span class="sr-only">Filtrar memórias</span><input id="memoryFilter" type="search" placeholder="Filtrar memórias…"></label><div class="memory-list" id="memoryList"><p class="empty-row">Nenhuma memória carregada.</p></div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-diagnostics" aria-labelledby="diagnosticsTitle" hidden>
+        <header class="view-heading"><div><span class="eyebrow">OBSERVABILIDADE</span><h1 id="diagnosticsTitle">Diagnóstico</h1><p>Conectividade, consumo, rotas e qualidade dos dados reportados.</p></div></header>
+        <div class="diagnostic-grid">
+          <article class="panel diagnostic-card"><small>STREAM DE EVENTOS</small><strong id="diagStream">Conectando</strong><span id="diagStreamDetail">Aguardando handshake.</span></article>
+          <article class="panel diagnostic-card"><small>SUPREMEMIND</small><strong id="diagIndex">Inativo</strong><span id="diagIndexDetail">Sem índice carregado.</span></article>
+          <article class="panel diagnostic-card"><small>PROVEDOR</small><strong id="diagProvider">—</strong><span id="diagProviderDetail">Nenhuma rota usada.</span></article>
+          <article class="panel diagnostic-card"><small>TELEMETRIA</small><strong id="diagEvents">0 eventos</strong><span id="diagEventsDetail">0 IDs únicos.</span></article>
+        </div>
+        <div class="diagnostics-layout">
+          <article class="panel"><header class="panel-heading"><span><small>MÉTRICAS ACUMULADAS</small><strong>Processo Genesis</strong></span></header><dl class="detail-list diagnostics-list" id="diagnosticMetrics"></dl></article>
+          <article class="panel"><header class="panel-heading"><span><small>ÚLTIMOS ERROS</small><strong>Falhas observadas</strong></span></header><div class="error-list" id="diagnosticErrors"><p class="empty-row">Nenhum erro no buffer atual.</p></div></article>
+        </div>
+      </section>
+    </main>
+
+    <aside class="activity-drawer" id="activityDrawer" aria-label="Atividade ao vivo" aria-hidden="false">
+      <header><span><small>EVENTOS</small><strong>Atividade ao vivo</strong></span><button class="icon-button drawer-close" id="activityClose" type="button" aria-label="Fechar atividade"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
+      <div class="activity-controls"><label><span class="sr-only">Filtrar eventos</span><input id="eventSearch" type="search" placeholder="Filtrar eventos"></label><select id="eventLevel" aria-label="Filtrar por nível"><option value="">Todos</option><option value="error">Erros</option><option value="warning">Avisos</option><option value="success">Sucesso</option><option value="info">Informação</option></select><button class="text-button" id="pauseEventsButton" type="button">Pausar</button></div>
+      <ol class="event-timeline" id="eventTimeline" aria-live="polite"><li class="empty-row">Aguardando eventos reais do Genesis…</li></ol>
+      <footer><span id="eventCount">0 eventos</span><span id="eventBufferState">Ao vivo</span></footer>
+    </aside>
+  </div>
+
+  <dialog class="help-dialog" id="neuralHelpDialog" aria-labelledby="helpTitle">
+    <div class="help-shell">
+      <header class="help-header">
+        <span><small>GUIA DO COCKPIT</small><strong id="helpTitle">Ajuda Neural</strong></span>
+        <button class="icon-button" id="closeHelpButton" type="button" aria-label="Fechar Ajuda Neural">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <div class="help-content">
+        <section class="help-intro">
+          <span class="help-orbit" aria-hidden="true"><i></i><i></i><i></i></span>
+          <div><small>ÁREA ATUAL</small><strong id="helpCurrentView">Visão geral</strong><p>O Cockpit mostra eventos reais. Abra <b>Execução</b> e envie uma mensagem no chat principal para ver os módulos acenderem conforme o cérebro trabalha.</p></div>
+        </section>
+
+        <div class="help-state-guide" aria-label="Legenda dos estados">
+          <span><i class="idle"></i><b>Inativo</b> ainda não participou</span>
+          <span><i class="processing"></i><b>Processando</b> trabalhando agora</span>
+          <span><i class="complete"></i><b>Concluído</b> etapa confirmada</span>
+          <span><i class="waiting"></i><b>Aguardando</b> rota, aprovação ou recurso</span>
+          <span><i class="error"></i><b>Erro</b> etapa não concluída</span>
+        </div>
+
+        <div class="help-areas">
+          <details data-help-view="overview">
+            <summary><span>◈</span><strong>Visão geral</strong><small>Projeto, tarefa, consumo e índice</small></summary>
+            <div><p><b>Tarefa atual:</b> objetivo, estado, modelo e duração da execução mais recente.</p><p><b>Orçamento:</b> tokens enviados/recebidos, requests, fallbacks e ferramentas. “Reportado” vem do provedor; “estimado” é cálculo local.</p><p><b>Arquivos, símbolos, arestas e bacias:</b> tamanho do índice, estruturas detectadas, relações do grafo e grupos de arquivos relacionados.</p><p><b>Indexar projeto:</b> cria ou atualiza o mapa local do SupremeMind. Não consome modelo de IA.</p></div>
+          </details>
+          <details data-help-view="execution">
+            <summary><span>⌁</span><strong>Execução</strong><small>O cérebro processando ao vivo</small></summary>
+            <div><p>Os cartões só mudam quando recebem um evento real. O rastro abaixo mostra as etapas persistidas da tarefa; a gaveta <b>Atividade ao vivo</b> mostra cada evento técnico.</p><dl class="help-module-list"><div><dt>Entrada</dt><dd>Recebe e valida seu pedido.</dd></div><div><dt>Planejador</dt><dd>Define intenção, passos e limites.</dd></div><div><dt>Contexto</dt><dd>Seleciona conversa, projeto e memória.</dd></div><div><dt>SupremeMind</dt><dd>Consulta estrutura e relações locais.</dd></div><div><dt>Roteador</dt><dd>Escolhe o modelo gratuito compatível.</dd></div><div><dt>Modelo</dt><dd>Executa a inferência remota.</dd></div><div><dt>Ferramentas</dt><dd>Lê, altera e testa o projeto.</dd></div><div><dt>Resposta</dt><dd>Verifica e entrega o resultado.</dd></div><div><dt>Memória</dt><dd>Preserva decisões e continuidade.</dd></div><div><dt>Guardião</dt><dd>Aplica orçamento, política e permissões.</dd></div></dl></div>
+          </details>
+          <details data-help-view="graph">
+            <summary><span>✦</span><strong>Grafo</strong><small>Mapa visual dos arquivos</small></summary>
+            <div><p><b>Nó:</b> um arquivo indexado; tamanho e posição refletem sua relevância estrutural.</p><p><b>Dependência:</b> import ou referência. <b>Chamada:</b> uso provável de um símbolo. <b>Coalteração:</b> arquivos que mudaram juntos no Git.</p><p>Selecione um nó para inspecionar relações e órbita. Use busca, zoom, arraste e o botão 100% para navegar.</p></div>
+          </details>
+          <details data-help-view="context">
+            <summary><span>≡</span><strong>Contexto</strong><small>O que seria enviado ao modelo</small></summary>
+            <div><p>Simula a seleção econômica de arquivos para uma pergunta. O orçamento limita o tamanho total.</p><p><b>L0:</b> núcleo diretamente relevante. <b>L1:</b> dependências e vizinhos prioritários. <b>L2:</b> apoio estrutural secundário.</p><p>O preview permite auditar e copiar o contexto antes de qualquer uso por uma IA.</p></div>
+          </details>
+          <details data-help-view="impact">
+            <summary><span>⌬</span><strong>Impacto e órbita</strong><small>Risco antes de alterar</small></summary>
+            <div><p><b>Impacto:</b> percorre quem depende do arquivo e estima o raio de mudança, de baixo a crítico.</p><p><b>Órbita:</b> mostra entradas, saídas e o atrator estrutural do arquivo. A profundidade controla quantos níveis do grafo serão percorridos.</p></div>
+          </details>
+          <details data-help-view="memory">
+            <summary><span>◎</span><strong>Memória</strong><small>Conhecimento persistente do projeto</small></summary>
+            <div><p>Registre decisões, bugs, preferências e arquitetura que devem influenciar tarefas futuras.</p><p><b>Arquivos relacionados</b> criam afinidade com buscas; <b>tags</b> facilitam filtro; <b>status</b> informa se a memória está registrada, validada, em atenção ou depreciada.</p></div>
+          </details>
+          <details data-help-view="diagnostics">
+            <summary><span>⚡</span><strong>Diagnóstico</strong><small>Conectividade e veracidade dos dados</small></summary>
+            <div><p><b>Stream:</b> ligação em tempo real com o servidor. <b>SupremeMind:</b> saúde do índice. <b>Provedor:</b> última rota usada. <b>Telemetria:</b> eventos únicos recebidos.</p><p>Métricas acumuladas separam requests, tokens, cache, fallback e retry. “Últimos erros” ajuda a localizar falhas sem abrir arquivos de log.</p></div>
+          </details>
+        </div>
+
+        <aside class="help-tip"><strong>Dica</strong><span>“Offline” significa que a API local não respondeu. “Polling” significa que os dados continuam atualizando, mas o stream ao vivo está reconectando. O botão circular atualiza o snapshot sem reiniciar o Genesis.</span></aside>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <noscript><div class="noscript">O Cockpit Neural exige JavaScript.</div></noscript>
+  <script type="module" src="./neural.js"></script>
+</body>
+</html>

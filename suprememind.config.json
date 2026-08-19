@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "projectName": "Genesis New",
+  "maxFileSize": 2500000,
+  "vectorDimensions": 128,
+  "tokenBudget": 6000,
+  "maxContextFiles": 15,
+  "gitCommitLimit": 500,
+  "ignore": [
+    ".git",
+    ".suprememind",
+    "node_modules",
+    "vendor",
+    "third_party",
+    "dist",
+    "build",
+    "bin",
+    "obj",
+    "Library",
+    "Temp",
+    "coverage"
+  ]
+}

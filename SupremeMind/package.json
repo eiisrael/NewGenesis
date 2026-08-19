@@ -1,0 +1,16 @@
+{
+  "name": "suprememind",
+  "version": "0.2.3",
+  "description": "Local graph-RAG, persistent project memory, token-aware context, WebGPU acceleration and a hardened graphical control core.",
+  "type": "module",
+  "bin": { "suprememind": "./bin/suprememind.js" },
+  "scripts": {
+    "gui": "node ./bin/suprememind.js gui",
+    "test": "node --test",
+    "check:syntax": "node --check bin/suprememind.js && node --check src/suprememind.js && node --check src/gui-server.js && node --check src/gpu-server.js && node --check src/progress-server.js && node --check gui/app.js && node --check gui/gpu-acceleration.js && node --check gui/live-progress.js && node --check gui/runtime-guardrails.js",
+    "check": "npm run check:syntax && node --test && npm pack --dry-run"
+  },
+  "engines": { "node": ">=20" },
+  "author": "Erick Israel",
+  "license": "MIT"
+}

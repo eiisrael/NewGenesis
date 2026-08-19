@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SupremeMind Control Core</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/help.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">SM</div>
+        <div>
+          <strong>SupremeMind</strong>
+          <span>CONTROL CORE</span>
+        </div>
+      </div>
+
+      <nav id="nav">
+        <button class="nav-item active" data-view="dashboard"><span>◈</span> Dashboard</button>
+        <button class="nav-item" data-view="project"><span>⌁</span> Projeto</button>
+        <button class="nav-item" data-view="search"><span>⌕</span> Busca neural</button>
+        <button class="nav-item" data-view="context"><span>≡</span> Contexto IA</button>
+        <button class="nav-item" data-view="galaxy"><span>✦</span> Galaxy</button>
+        <button class="nav-item" data-view="analysis"><span>⌬</span> Impacto e órbita</button>
+        <button class="nav-item" data-view="files"><span>▤</span> Arquivos</button>
+        <button class="nav-item" data-view="memory"><span>◎</span> Memória</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span> Configurações</button>
+        <button class="nav-item" data-view="diagnostics"><span>⚡</span> Diagnóstico</button>
+        <button class="nav-item" data-view="help"><span>?</span> Ajuda</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-row"><span id="serverDot" class="status-dot"></span><span id="serverState">Conectando</span></div>
+        <div class="version">GUI v<span id="guiVersion">0.2.0</span></div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">ACTIVE PROJECT</div>
+          <div class="project-path" id="activeProject">Carregando...</div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" data-go="help">? Ajuda</button>
+          <button class="ghost" id="refreshBtn">↻ Atualizar</button>
+          <button class="primary" data-go="project">Trocar projeto</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-dashboard">
+        <div class="hero-grid">
+          <div>
+            <div class="eyebrow neon">SUPREME INTELLIGENCE LAYER</div>
+            <h1>Controle total do contexto,<br><span>sem desperdiçar tokens.</span></h1>
+            <p>Indexação estrutural, grafo bidirecional, memória persistente e seleção de contexto em uma central visual única.</p>
+            <div class="hero-actions">
+              <button class="primary large" data-go="project">Preparar projeto</button>
+              <button class="ghost large" data-go="search">Iniciar busca</button>
+            </div>
+          </div>
+          <div class="core-visual">
+            <div class="orbit orbit-a"></div>
+            <div class="orbit orbit-b"></div>
+            <div class="orbit orbit-c"></div>
+            <div class="core-pulse">SM</div>
+            <span class="node n1"></span><span class="node n2"></span><span class="node n3"></span><span class="node n4"></span>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <article class="stat-card"><span>ARQUIVOS</span><strong id="statFiles">—</strong><small>indexados</small></article>
+          <article class="stat-card"><span>SÍMBOLOS</span><strong id="statSymbols">—</strong><small>detectados</small></article>
+          <article class="stat-card"><span>ARESTAS</span><strong id="statEdges">—</strong><small>relações</small></article>
+          <article class="stat-card"><span>BACIAS</span><strong id="statBasins">—</strong><small>domínios</small></article>
+          <article class="stat-card"><span>MEMÓRIAS</span><strong id="statMemory">—</strong><small>persistidas</small></article>
+          <article class="stat-card"><span>GIT</span><strong id="statGit">—</strong><small>commits lidos</small></article>
+        </div>
+
+        <div class="two-columns">
+          <article class="panel">
+            <div class="panel-head"><div><span class="eyebrow">TOPOLOGIA</span><h2>Principais atratores</h2></div><button class="tiny ghost" data-go="galaxy">Abrir Galaxy</button></div>
+            <div id="attractorList" class="rank-list empty-state">Índice ainda não disponível.</div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><span class="eyebrow">ACTIVITY STREAM</span><h2>Operações recentes</h2></div></div>
+            <div id="eventList" class="event-list empty-state">Nenhuma operação nesta sessão.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-project">
+        <div class="section-title"><div><span class="eyebrow">PROJECT CONTROL</span><h1>Preparação e indexação</h1></div></div>
+        <div class="panel project-selector">
+          <label>Pasta do projeto</label>
+          <div class="input-row">
+            <input id="projectRoot" placeholder="C:\Users\Home\Desktop\MeuProjeto">
+            <button class="primary" id="switchProjectBtn">Carregar pasta</button>
+          </div>
+          <p class="hint">Informe o caminho completo. O servidor continuará local em 127.0.0.1.</p>
+        </div>
+        <div class="action-grid">
+          <button class="action-card" data-action="init"><b>01</b><strong>Inicializar</strong><span>Cria configuração, pasta de estado e regras de exclusão.</span></button>
+          <button class="action-card" data-action="index"><b>02</b><strong>Indexar</strong><span>Lê o projeto e constrói símbolos, grafo, bacias e Git.</span></button>
+          <button class="action-card" data-action="update"><b>03</b><strong>Atualizar</strong><span>Reaproveita hashes e reprocessa somente o que mudou.</span></button>
+          <button class="action-card danger" data-action="force-index"><b>04</b><strong>Reindexação total</strong><span>Ignora o cache e reconstrói todo o índice.</span></button>
+        </div>
+        <article class="panel terminal-panel">
+          <div class="panel-head"><div><span class="eyebrow">EXECUTION LOG</span><h2>Console visual</h2></div><button class="tiny ghost" id="clearProjectLog">Limpar</button></div>
+          <pre id="projectLog" class="terminal">Pronto.</pre>
+        </article>
+      </section>
+
+      <section class="view" id="view-search">
+        <div class="section-title"><div><span class="eyebrow">HYBRID RETRIEVAL</span><h1>Busca neural do código</h1></div></div>
+        <article class="panel">
+          <div class="query-bar">
+            <input id="searchQuery" placeholder="Ex.: onde o login valida a senha do jogador?">
+            <select id="searchLimit"><option>10</option><option selected>20</option><option>40</option><option>80</option></select>
+            <button class="primary" id="searchBtn">Pesquisar</button>
+          </div>
+          <p class="hint">Combina BM25, vetor semântico local, caminho exato, centralidade e memórias.</p>
+        </article>
+        <div id="searchResults" class="result-grid empty-state">Digite uma consulta para começar.</div>
+      </section>
+
+      <section class="view" id="view-context">
+        <div class="section-title"><div><span class="eyebrow">TOKEN-AWARE CONTEXT</span><h1>Contexto pronto para a IA</h1></div></div>
+        <div class="two-columns context-layout">
+          <article class="panel">
+            <label>Tarefa completa</label>
+            <textarea id="contextQuery" rows="9" placeholder="Descreva exatamente o que o Codex deve corrigir ou implementar..."></textarea>
+            <div class="field-grid">
+              <div><label>Orçamento de tokens</label><input id="contextBudget" type="number" min="500" max="100000" value="6000"></div>
+              <div><label>Salvar como</label><input id="contextSave" placeholder="contexto-suprememind.md"></div>
+            </div>
+            <div class="button-row">
+              <button class="primary" id="contextBtn">Gerar contexto</button>
+              <button class="ghost" id="copyContextBtn">Copiar</button>
+              <button class="ghost" id="downloadContextBtn">Baixar .md</button>
+            </div>
+          </article>
+          <article class="panel output-panel">
+            <div class="panel-head"><div><span class="eyebrow">OUTPUT</span><h2>Contexto estrutural</h2></div></div>
+            <pre id="contextOutput" class="markdown-output">A saída aparecerá aqui.</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-galaxy">
+        <div class="section-title"><div><span class="eyebrow">TOPOLOGICAL MAP</span><h1>SupremeMind Galaxy</h1></div><div class="button-row"><button class="primary" id="generateGalaxyBtn">Gerar Galaxy</button><button class="ghost" id="reloadGalaxyBtn">Recarregar</button></div></div>
+        <article class="panel galaxy-panel"><iframe id="galaxyFrame" title="SupremeMind Galaxy"></iframe></article>
+      </section>
+
+      <section class="view" id="view-analysis">
+        <div class="section-title"><div><span class="eyebrow">BLAST RADIUS</span><h1>Impacto e órbita</h1></div></div>
+        <article class="panel">
+          <div class="query-bar">
+            <input id="analysisPath" list="filePathList" placeholder="src/Auth/Login.cpp">
+            <input id="analysisDepth" type="number" min="1" max="10" value="3">
+            <button class="danger-btn" id="impactBtn">Analisar impacto</button>
+            <button class="primary" id="orbitBtn">Mapear órbita</button>
+          </div>
+          <datalist id="filePathList"></datalist>
+        </article>
+        <div class="analysis-grid">
+          <article class="panel"><div class="panel-head"><div><span class="eyebrow">IMPACT</span><h2>Raio de explosão</h2></div></div><div id="impactOutput" class="structured-output empty-state">Nenhuma análise.</div></article>
+          <article class="panel"><div class="panel-head"><div><span class="eyebrow">ORBIT</span><h2>Entradas e saídas</h2></div></div><div id="orbitOutput" class="structured-output empty-state">Nenhuma órbita.</div></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-files">
+        <div class="section-title"><div><span class="eyebrow">INDEX EXPLORER</span><h1>Arquivos e símbolos</h1></div></div>
+        <div class="file-layout">
+          <article class="panel file-list-panel">
+            <input id="fileFilter" placeholder="Filtrar por caminho, linguagem ou bacia...">
+            <div id="fileList" class="file-list empty-state">Índice não carregado.</div>
+          </article>
+          <article class="panel code-panel">
+            <div class="panel-head"><div><span class="eyebrow">SOURCE VIEWER</span><h2 id="fileViewerTitle">Selecione um arquivo</h2></div><button class="tiny ghost" id="copyFileBtn">Copiar</button></div>
+            <pre id="fileViewer" class="code-viewer">Nenhum arquivo selecionado.</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-memory">
+        <div class="section-title"><div><span class="eyebrow">LONG-TERM PROJECT MEMORY</span><h1>Memória persistente</h1></div></div>
+        <div class="two-columns">
+          <article class="panel">
+            <label>Título</label><input id="memoryTitle" placeholder="Decisão arquitetural">
+            <label>Conteúdo</label><textarea id="memoryContent" rows="8" placeholder="O que deve ser lembrado nas próximas tarefas?"></textarea>
+            <label>Arquivos relacionados</label><input id="memoryFiles" placeholder="src/a.cpp, src/b.h">
+            <label>Tags</label><input id="memoryTags" placeholder="login, ui, persistencia">
+            <label>Status</label><select id="memoryStatus"><option>recorded</option><option>success</option><option>warning</option><option>deprecated</option></select>
+            <button class="primary full" id="saveMemoryBtn">Gravar memória</button>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><span class="eyebrow">RECALL</span><h2>Memórias gravadas</h2></div><button class="tiny ghost" id="refreshMemoryBtn">Atualizar</button></div>
+            <input id="memoryFilter" placeholder="Filtrar memórias...">
+            <div id="memoryList" class="memory-list empty-state">Nenhuma memória carregada.</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="section-title"><div><span class="eyebrow">SYSTEM TUNING</span><h1>Configurações do motor</h1></div></div>
+        <div class="settings-grid">
+          <article class="panel">
+            <label>Nome do projeto</label><input id="cfgProjectName">
+            <label>Tamanho máximo por arquivo</label><input id="cfgMaxFileSize" type="number">
+            <label>Dimensões vetoriais</label><input id="cfgVectorDimensions" type="number">
+            <label>Orçamento padrão</label><input id="cfgTokenBudget" type="number">
+            <label>Máximo de arquivos no contexto</label><input id="cfgMaxContextFiles" type="number">
+            <label>Limite de commits Git</label><input id="cfgGitCommitLimit" type="number">
+          </article>
+          <article class="panel">
+            <label>Diretórios ignorados</label>
+            <textarea id="cfgIgnore" rows="16" placeholder="um por linha"></textarea>
+            <button class="primary full" id="saveConfigBtn">Salvar configurações</button>
+            <p class="hint">Após alterar pesos estruturais ou dimensões vetoriais, faça uma reindexação total.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-diagnostics">
+        <div class="section-title"><div><span class="eyebrow">SYSTEM HEALTH</span><h1>Diagnóstico e benchmark</h1></div></div>
+        <div class="button-row diagnostic-actions"><button class="primary" id="doctorBtn">Executar Doctor</button><button class="ghost" id="benchmarkBtn">Executar Benchmark</button></div>
+        <div class="two-columns">
+          <article class="panel terminal-panel"><div class="panel-head"><div><span class="eyebrow">DOCTOR</span><h2>Saúde do sistema</h2></div></div><pre id="doctorOutput" class="terminal">Aguardando execução.</pre></article>
+          <article class="panel terminal-panel"><div class="panel-head"><div><span class="eyebrow">BENCHMARK</span><h2>Latência local</h2></div></div><pre id="benchmarkOutput" class="terminal">Aguardando execução.</pre></article>
+        </div>
+      </section>
+
+      <section class="view" id="view-help">
+        <div class="section-title"><div><span class="eyebrow">KNOWLEDGE BASE</span><h1>Ajuda e treinamento</h1></div></div>
+
+        <div class="help-hero">
+          <div>
+            <span class="eyebrow neon">SUPREMEMIND OPERATIONS MANUAL</span>
+            <h2>Aprenda a trabalhar com a ferramenta,<br><span>do primeiro índice à tarefa entregue ao Codex.</span></h2>
+            <p>Esta central explica o fluxo completo, o significado de cada métrica, quando usar cada área e apresenta exemplos práticos que podem ser adaptados ao seu projeto.</p>
+            <div class="help-hero-actions">
+              <button class="primary large" data-go="project">Começar agora</button>
+              <button class="ghost large" data-go="search">Testar uma busca</button>
+              <button class="ghost large" data-go="context">Gerar contexto</button>
+            </div>
+          </div>
+          <div class="help-core" aria-hidden="true">
+            <div class="help-ring r1"></div><div class="help-ring r2"></div><div class="help-ring r3"></div>
+            <div class="help-core-center"><span>?</span></div>
+          </div>
+        </div>
+
+        <nav class="help-quick-nav" aria-label="Atalhos da ajuda">
+          <a href="#help-start">Primeiros passos</a>
+          <a href="#help-areas">Cada área</a>
+          <a href="#help-examples">Exemplos</a>
+          <a href="#help-concepts">Conceitos</a>
+          <a href="#help-routine">Fluxo diário</a>
+          <a href="#help-errors">Erros comuns</a>
+        </nav>
+
+        <section class="help-section" id="help-start">
+          <div class="help-section-head">
+            <div><span class="eyebrow">QUICK START</span><h2>Primeiros passos: o fluxo correto</h2></div>
+            <p>O SupremeMind funciona melhor quando você segue esta ordem. Ela evita consultas sobre índice antigo e reduz o risco de alterar arquivos sem verificar dependentes.</p>
+          </div>
+          <div class="help-flow">
+            <article class="help-flow-step"><span class="help-step-number">01</span><strong>Carregar projeto</strong><p>Selecione a pasta raiz que contém o código real.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">02</span><strong>Inicializar</strong><p>Cria configuração, regras de exclusão e estado local.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">03</span><strong>Indexar</strong><p>Extrai símbolos, relações, Git, PageRank e bacias.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">04</span><strong>Pesquisar</strong><p>Localiza os arquivos mais relacionados à tarefa.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">05</span><strong>Gerar contexto</strong><p>Monta um pacote compacto para o agente de IA.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">06</span><strong>Analisar impacto</strong><p>Descobre quem depende dos arquivos que serão alterados.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">07</span><strong>Editar e testar</strong><p>Use o Codex, faça build e valide o comportamento.</p></article>
+            <article class="help-flow-step"><span class="help-step-number">08</span><strong>Gravar memória</strong><p>Registre a decisão validada e atualize o índice.</p></article>
+          </div>
+          <div class="help-callout">
+            <div class="help-callout-icon">i</div>
+            <div><h4>Quando devo usar Atualizar?</h4><p>Depois de editar arquivos, trocar de branch, executar <code>git pull</code>, aplicar um patch ou concluir uma tarefa. A atualização incremental reaproveita arquivos cujo hash não mudou.</p></div>
+          </div>
+        </section>
+
+        <section class="help-section" id="help-areas">
+          <div class="help-section-head">
+            <div><span class="eyebrow">CONTROL MAP</span><h2>O que cada área faz</h2></div>
+            <p>Cada módulo possui uma responsabilidade. Os botões abaixo abrem diretamente a área correspondente.</p>
+          </div>
+          <div class="help-topic-grid">
+            <article class="help-topic"><div class="help-topic-icon">◈</div><h3>Dashboard</h3><p>Visão geral da saúde estrutural do projeto.</p><ul><li>Arquivos e símbolos indexados</li><li>Arestas e bacias</li><li>Memórias e Git</li><li>Atratores mais importantes</li></ul><button class="tiny ghost" data-go="dashboard">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">⌁</div><h3>Projeto</h3><p>Prepara e mantém o índice do repositório.</p><ul><li>Carregar outra pasta</li><li>Inicializar projeto</li><li>Indexar e atualizar</li><li>Reindexação total</li></ul><button class="tiny ghost" data-go="project">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">⌕</div><h3>Busca neural</h3><p>Encontra arquivos relevantes sem navegar pasta por pasta.</p><ul><li>BM25 e similaridade semântica</li><li>Centralidade e caminho</li><li>Afinidade com memórias</li><li>Score relativo de relevância</li></ul><button class="tiny ghost" data-go="search">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">≡</div><h3>Contexto IA</h3><p>Transforma uma tarefa em contexto estruturado para o Codex.</p><ul><li>Define orçamento de tokens</li><li>Seleciona arquivos prioritários</li><li>Inclui entradas e saídas</li><li>Copia ou baixa Markdown</li></ul><button class="tiny ghost" data-go="context">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">✦</div><h3>Galaxy</h3><p>Mapa visual das relações e domínios do projeto.</p><ul><li>Nós são arquivos</li><li>Linhas são relações</li><li>Tamanho indica centralidade</li><li>Agrupamentos indicam bacias</li></ul><button class="tiny ghost" data-go="galaxy">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">⌬</div><h3>Impacto e órbita</h3><p>Mostra o raio de explosão antes de modificar um arquivo.</p><ul><li>Dependentes diretos e indiretos</li><li>Risco LOW a CRITICAL</li><li>Callers e callees</li><li>Profundidade configurável</li></ul><button class="tiny ghost" data-go="analysis">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">▤</div><h3>Arquivos</h3><p>Navegador do conteúdo que entrou no índice.</p><ul><li>Filtro por caminho e linguagem</li><li>Bacia e centralidade</li><li>Visualizador de código</li><li>Cópia rápida do conteúdo</li></ul><button class="tiny ghost" data-go="files">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">◎</div><h3>Memória</h3><p>Conhecimento persistente validado durante o trabalho.</p><ul><li>Decisões arquiteturais</li><li>Cuidados e limitações</li><li>Arquivos relacionados</li><li>Tags e status</li></ul><button class="tiny ghost" data-go="memory">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">⚙</div><h3>Configurações</h3><p>Ajusta limites e comportamento do motor.</p><ul><li>Dimensão vetorial</li><li>Orçamento padrão</li><li>Máximo de arquivos</li><li>Pastas ignoradas</li></ul><button class="tiny ghost" data-go="settings">Abrir área</button></article>
+            <article class="help-topic"><div class="help-topic-icon">⚡</div><h3>Diagnóstico</h3><p>Verifica instalação, índice, Git e desempenho local.</p><ul><li>Doctor de saúde</li><li>Benchmark de busca</li><li>Tempo de contexto</li><li>Detecção de falhas</li></ul><button class="tiny ghost" data-go="diagnostics">Abrir área</button></article>
+          </div>
+        </section>
+
+        <section class="help-section" id="help-examples">
+          <div class="help-section-head">
+            <div><span class="eyebrow">VISIBLE EXAMPLES</span><h2>Exemplos práticos</h2></div>
+            <p>Copie a ideia e adapte os nomes para seu sistema. Consultas descritivas normalmente funcionam melhor que palavras isoladas.</p>
+          </div>
+          <div class="help-example-grid">
+            <article class="help-example"><h3><span>01</span> Busca por funcionalidade</h3><p>Use quando você sabe o comportamento, mas não sabe em qual arquivo ele está.</p><pre class="help-code">onde o login valida a senha e cria a sessão do jogador</pre><div class="help-result"><b>Resultado esperado:</b> arquivos de autenticação, sessão, banco e controladores próximos aparecem no topo.</div></article>
+            <article class="help-example"><h3><span>02</span> Busca por persistência</h3><p>Inclua a entidade e o momento em que ela é salva.</p><pre class="help-code">quem salva posição, inventário e status do personagem ao desconectar</pre><div class="help-result"><b>Resultado esperado:</b> rotinas de logout, persistência, banco e serialização.</div></article>
+            <article class="help-example wide"><h3><span>03</span> Tarefa completa para Contexto IA</h3><p>Explique problema, comportamento esperado e restrições. Isso orienta a seleção dos arquivos.</p><pre class="help-code">Corrigir o login que alterna entre a posição antiga e a posição salva no banco. O banco deve ser a fonte única após a sincronização. Preservar o comportamento original, não alterar layout de memória, verificar cliente e servidor e analisar dependentes antes da edição.</pre><div class="help-result"><b>Resultado esperado:</b> um Markdown com L0, arquivos prioritários L1/L2, dependências, bacia, símbolos e orientação de validação.</div></article>
+            <article class="help-example"><h3><span>04</span> Análise de impacto</h3><p>Informe o caminho exatamente como aparece na lista de arquivos.</p><pre class="help-code">src/Auth/LoginManager.cpp
+Profundidade: 3</pre><div class="help-result"><b>Interpretação:</b> HIGH ou CRITICAL indica que o arquivo é compartilhado e exige testes mais amplos.</div></article>
+            <article class="help-example"><h3><span>05</span> Memória validada</h3><p>Grave somente conhecimento útil e confirmado.</p><pre class="help-code">Título: Fonte única do layout
+Conteúdo: Após sincronizar com o banco, o cliente não deve reaplicar a configuração local antiga.
+Arquivos: LoginPanel.cpp, UILayoutRepository.cpp
+Tags: login, ui, persistencia
+Status: success</pre></article>
+            <article class="help-example"><h3><span>06</span> Busca de rede</h3><p>Use termos do domínio, evento e direção do fluxo.</p><pre class="help-code">onde o servidor monta e envia o pacote de personagem para o cliente</pre><div class="help-result"><b>Dica:</b> depois abra a órbita do melhor resultado para visualizar remetentes, receptores e módulos próximos.</div></article>
+            <article class="help-example"><h3><span>07</span> Busca de interface</h3><p>Descreva o painel, evento e estado visual.</p><pre class="help-code">painel de inventário fecha com ESC e atualiza o foco do mouse</pre><div class="help-result"><b>Dica:</b> nomes visíveis da tela, IDs e eventos de clique aumentam a precisão.</div></article>
+          </div>
+
+          <div class="two-columns" style="margin-top:14px">
+            <article class="panel">
+              <div class="panel-head"><div><span class="eyebrow">TOKEN BUDGET</span><h2>Quanto contexto usar?</h2></div></div>
+              <table class="help-budget-table"><thead><tr><th>TAREFA</th><th>ORÇAMENTO</th><th>USO</th></tr></thead><tbody><tr><td>Correção pequena</td><td>2.000–4.000</td><td>Um fluxo ou poucos arquivos</td></tr><tr><td>Funcionalidade média</td><td>4.000–8.000</td><td>Módulo com dependências</td></tr><tr><td>Refatoração</td><td>8.000–12.000</td><td>Vários componentes</td></tr><tr><td>Investigação ampla</td><td>12.000–20.000</td><td>Arquitetura e múltiplos domínios</td></tr></tbody></table>
+            </article>
+            <article class="panel">
+              <div class="panel-head"><div><span class="eyebrow">HYBRID SCORE</span><h2>Como a busca é pontuada?</h2></div></div>
+              <div class="help-score-row"><span>Semântica local</span><div class="help-score-bar"><span class="help-score-semantic"></span></div><b>39%</b></div>
+              <div class="help-score-row"><span>BM25</span><div class="help-score-bar"><span class="help-score-bm25"></span></div><b>30%</b></div>
+              <div class="help-score-row"><span>Caminho exato</span><div class="help-score-bar"><span class="help-score-path"></span></div><b>12%</b></div>
+              <div class="help-score-row"><span>Centralidade</span><div class="help-score-bar"><span class="help-score-central"></span></div><b>10%</b></div>
+              <div class="help-score-row"><span>Memória</span><div class="help-score-bar"><span class="help-score-memory"></span></div><b>9%</b></div>
+              <p class="hint">O score é relativo para ordenar candidatos. Ele não substitui a confirmação no código real.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="help-section" id="help-concepts">
+          <div class="help-section-head">
+            <div><span class="eyebrow">GLOSSARY</span><h2>O que significam os conceitos</h2></div>
+            <p>Estes termos aparecem no Dashboard, Galaxy, busca, contexto e análise de impacto.</p>
+          </div>
+          <div class="help-glossary">
+            <article class="help-term"><strong>Índice</strong><p>Arquivo local com o conhecimento estrutural extraído do projeto.</p></article>
+            <article class="help-term"><strong>Arquivo</strong><p>Unidade de código ou configuração analisada pelo indexador.</p></article>
+            <article class="help-term"><strong>Símbolo</strong><p>Classe, função, método, estrutura, chave ou título detectado.</p></article>
+            <article class="help-term"><strong>Aresta</strong><p>Ligação entre dois arquivos: dependência, chamada ou coalteração Git.</p></article>
+            <article class="help-term"><strong>Bacia</strong><p>Grupo de arquivos que converge para o mesmo núcleo estrutural.</p></article>
+            <article class="help-term"><strong>Atrator</strong><p>Arquivo central que representa o núcleo dominante de uma bacia.</p></article>
+            <article class="help-term"><strong>Centralidade</strong><p>Estimativa da importância de um arquivo dentro do grafo.</p></article>
+            <article class="help-term"><strong>PageRank</strong><p>Algoritmo usado para distribuir importância pelas conexões.</p></article>
+            <article class="help-term"><strong>Caller</strong><p>Arquivo que chama ou depende do arquivo analisado.</p></article>
+            <article class="help-term"><strong>Callee</strong><p>Arquivo chamado ou utilizado pelo arquivo analisado.</p></article>
+            <article class="help-term"><strong>Órbita</strong><p>Vizinhança de entradas, saídas e níveis ao redor de um arquivo.</p></article>
+            <article class="help-term"><strong>Impacto</strong><p>Estimativa de quantos dependentes podem ser afetados por uma mudança.</p></article>
+            <article class="help-term"><strong>BM25</strong><p>Busca lexical que valoriza termos importantes e raros.</p></article>
+            <article class="help-term"><strong>Vetor semântico</strong><p>Representação numérica local usada para aproximar significados.</p></article>
+            <article class="help-term"><strong>Coalteração Git</strong><p>Arquivos modificados juntos repetidamente no histórico.</p></article>
+            <article class="help-term"><strong>Token</strong><p>Unidade aproximada de texto consumida pelo contexto da IA.</p></article>
+            <article class="help-term"><strong>L0</strong><p>Núcleo de maior prioridade selecionado para a tarefa.</p></article>
+            <article class="help-term"><strong>L1/L2</strong><p>Arquivos prioritários e vizinhos estruturais do núcleo.</p></article>
+            <article class="help-term"><strong>Memória</strong><p>Decisão persistente que influencia futuras consultas.</p></article>
+            <article class="help-term"><strong>Hash SHA-256</strong><p>Identificador usado para saber se um arquivo realmente mudou.</p></article>
+          </div>
+        </section>
+
+        <section class="help-section" id="help-routine">
+          <div class="help-section-head">
+            <div><span class="eyebrow">DAILY OPERATIONS</span><h2>Fluxo diário recomendado</h2></div>
+            <p>Este checklist transforma o SupremeMind em uma camada contínua de inteligência do projeto.</p>
+          </div>
+          <div class="help-checklist">
+            <div class="help-check"><span>✓</span><div><b>1. Abra a GUI no projeto correto.</b><br>Confira o caminho exibido no topo.</div></div>
+            <div class="help-check"><span>✓</span><div><b>2. Execute Atualizar.</b><br>Especialmente após pull, troca de branch ou edição.</div></div>
+            <div class="help-check"><span>✓</span><div><b>3. Pesquise a funcionalidade.</b><br>Localize o núcleo antes de pedir qualquer alteração.</div></div>
+            <div class="help-check"><span>✓</span><div><b>4. Gere Contexto IA.</b><br>Descreva problema, objetivo e restrições técnicas.</div></div>
+            <div class="help-check"><span>✓</span><div><b>5. Analise o impacto.</b><br>Faça isso para todos os arquivos centrais que serão modificados.</div></div>
+            <div class="help-check"><span>✓</span><div><b>6. Trabalhe com o Codex.</b><br>Entregue o Markdown gerado e exija build e testes.</div></div>
+            <div class="help-check"><span>✓</span><div><b>7. Valide o comportamento.</b><br>Confirme que a correção não quebrou módulos vizinhos.</div></div>
+            <div class="help-check"><span>✓</span><div><b>8. Grave a memória e atualize.</b><br>Registre somente decisões comprovadas.</div></div>
+          </div>
+          <div class="help-callout warning"><div class="help-callout-icon">!</div><div><h4>Não entregue somente uma frase curta à IA</h4><p>Uma tarefa como “arrume o login” é ambígua. Informe o defeito observado, o resultado esperado, restrições, plataformas afetadas e o que não pode ser alterado.</p></div></div>
+        </section>
+
+        <section class="help-section" id="help-errors">
+          <div class="help-section-head"><div><span class="eyebrow">TROUBLESHOOTING</span><h2>Erros e dúvidas comuns</h2></div><p>Abra uma pergunta para ver a causa provável e o procedimento recomendado.</p></div>
+          <div class="help-accordion">
+            <details><summary>Os cartões do Dashboard mostram “—”.</summary><div class="help-answer">O projeto ainda não possui índice carregado. Abra <b>Projeto</b>, clique em <b>Inicializar</b> e depois em <b>Indexar</b>. Se você trocou de pasta, confirme o caminho no topo.</div></details>
+            <details><summary>A busca não encontra uma função que existe.</summary><div class="help-answer">Execute <b>Atualizar</b>, confirme que o arquivo não está em uma pasta ignorada e tente uma consulta mais descritiva. Macros complexas, reflexão e chamadas dinâmicas podem não ser resolvidas completamente pelo parser atual.</div></details>
+            <details><summary>Quando usar Reindexação total?</summary><div class="help-answer">Use após alterar dimensões vetoriais, regras estruturais, muitos diretórios ignorados, atualizar a versão do parser ou suspeitar de índice inconsistente. No uso diário, prefira <b>Atualizar</b>.</div></details>
+            <details><summary>O Git aparece como OFF.</summary><div class="help-answer">Verifique se o Git está instalado e se a pasta analisada é um repositório. A indexação continua funcionando, mas as relações de coalteração ficam indisponíveis.</div></details>
+            <details><summary>O score de busca baixo significa que o arquivo está errado?</summary><div class="help-answer">Não necessariamente. O score serve para ordenar candidatos. Abra os melhores resultados, confira símbolos, órbita e dependências no código real antes de concluir.</div></details>
+            <details><summary>Contexto maior é sempre melhor?</summary><div class="help-answer">Não. Contexto excessivo pode diluir a tarefa. Comece com 4.000–8.000 tokens para trabalhos normais e aumente somente quando o módulo realmente envolver muitos arquivos.</div></details>
+            <details><summary>Qual diferença entre Impacto e Órbita?</summary><div class="help-answer"><b>Impacto</b> percorre dependentes e estima o risco de mudança. <b>Órbita</b> mostra entradas, saídas e vizinhança estrutural sem resumir tudo em uma classificação de risco.</div></details>
+            <details><summary>O Galaxy substitui a leitura do código?</summary><div class="help-answer">Não. Ele facilita a orientação arquitetural, mas relações de baixa confiança e comportamentos dinâmicos devem ser verificados diretamente nos arquivos.</div></details>
+            <details><summary>Onde os dados são salvos?</summary><div class="help-answer">O índice e as memórias ficam na pasta local <code>.suprememind/</code> do projeto. A configuração principal fica em <code>suprememind.config.json</code>.</div></details>
+            <details><summary>Posso expor a GUI na internet?</summary><div class="help-answer">Não é recomendado. Mantenha em <code>127.0.0.1</code>. Exposição em rede exigiria autenticação, TLS, firewall e uma revisão específica de segurança.</div></details>
+          </div>
+          <div class="help-callout danger"><div class="help-callout-icon">×</div><div><h4>Não indexe segredos</h4><p>Adicione arquivos <code>.env</code>, chaves privadas, dumps e diretórios sensíveis às regras de exclusão antes de indexar um projeto confidencial.</p></div></div>
+        </section>
+
+        <div class="help-footer-card">
+          <span class="eyebrow neon">READY TO OPERATE</span>
+          <h2>Projeto carregado → índice atualizado → busca → contexto → impacto → memória.</h2>
+          <p>Essa sequência é o núcleo do SupremeMind. Ela reduz exploração desnecessária, torna a alteração mais consciente e preserva conhecimento útil para as próximas tarefas.</p>
+          <div class="help-footer-actions"><button class="primary" data-go="project">Preparar projeto</button><button class="ghost" data-go="search">Pesquisar código</button><button class="ghost" data-go="context">Montar contexto</button></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toastStack" class="toast-stack"></div>
+  <div id="busyOverlay" class="busy-overlay hidden"><div class="loader-core"><div></div><span id="busyText">Processando...</span></div></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

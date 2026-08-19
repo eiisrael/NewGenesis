@@ -1,0 +1,61 @@
+GENESIS NEW 2.1 — EVOLUÇÃO IMPLEMENTADA E PRÓXIMAS FRONTEIRAS
+================================================================
+
+Implementado nesta evolução
+---------------------------
+- Contrato determinístico por tarefa: objetivo, tipo, complexidade, formato,
+  permissões, etapas, critérios e orçamento antes da primeira chamada.
+- Roteamento por intenção e capacidade, usando todo o catálogo gratuito atual da
+  OpenRouter; código, diagnóstico, raciocínio, visão, contexto e tools recebem
+  pesos diferentes, com saúde/latência histórica da rota.
+- Perfil técnico local de projetos: inventário, linguagens, arquitetura provável,
+  entradas, manifestos, maiores arquivos, símbolos, dependências externas e riscos.
+- Relatórios de overview em Markdown, JSON ou Bash sem consumir API.
+- Orçamento duplo: número de requests e tokens cumulativos de entrada.
+- Teto individual de payload antes de cada HTTP; payload acima do teto não sai da
+  máquina.
+- Sanitização de data URI, base64, linhas gigantes e conteúdo opaco.
+- Resultados de ferramentas compactos, paginação de leitura e deduplicação.
+- Sem retry oculto de timeout, 503 ou ferramenta repetida.
+- Continuação de resposta por cauda compacta, sem reenviar respostas inteiras de
+  forma triangular; saída ainda incompleta é marcada como parcial.
+- Contabilidade por request/modelo em sucesso, falha, timeout, orçamento e STOP.
+- Edição por trecho exato para arquivos grandes, evitando reescrever tudo.
+- Orçamento de ferramentas adaptado à complexidade, com síntese final reservada.
+- Verificador determinístico de formato, conclusão, execução real e testes.
+- Ledger persistente de tarefas, etapas, evidências, uso, conclusão e falha.
+- SupremeMind seguro versão 3 com HTML/CSS/YAML, chunks, busca de trechos, grafo,
+  contexto L0/L1/L2, impacto, órbita e memória.
+- Área Neural reconstruída como cockpit funcional com sete abas e dados reais.
+
+Melhorias úteis para aproximar a experiência de agentes de ponta
+---------------------------------------------------------------
+1. Evals próprios por tipo de tarefa e projeto, com taxa de sucesso comparável.
+2. Aprendizado persistente de desempenho por modelo, sem guardar prompts privados.
+3. Parser AST/Language Server para símbolos e referências 100% precisos por linguagem.
+4. Sandbox de execução por projeto para testes potencialmente não confiáveis.
+5. Checkpoints/undo transacional para desfazer uma tarefa inteira com um clique.
+6. Worktrees/branches automáticos para mudanças grandes e revisão visual do diff.
+7. Testes gerados a partir dos critérios de aceitação antes da implementação.
+8. Verificador independente em modelo diferente apenas para tarefas de alto risco,
+   sempre dentro de um orçamento explícito e opcional.
+9. Cache semântico local criptografado para reaproveitar análises equivalentes.
+10. Integração opcional com documentação oficial e pesquisa web com citações.
+
+Recursos úteis no painel
+-----------------------
+- Orçamento previsto x real por tarefa e por chamada.
+- Modelo escolhido e motivos: capacidade, saúde, contexto, latência e especialidade.
+- Etapas e critérios de aceitação com estado ao vivo.
+- Evidências clicáveis: arquivo, linha, comando, teste e resultado.
+- Diff, arquivos tocados, risco de impacto e botão de desfazer.
+- Qualidade do índice SupremeMind e aviso de índice desatualizado.
+- Métricas reportadas pelo provedor separadas das estimativas locais.
+- Histórico de falhas/cooldown por modelo e troca automática explicada.
+- Privacidade: exatamente quais trechos sairiam da máquina antes de enviar.
+- Exportação do relatório da tarefa em Markdown/JSON.
+
+Princípio central
+-----------------
+Inteligência não é fazer mais requests. É selecionar melhor, recuperar menos contexto,
+executar ações verificáveis e saber quando a evidência ainda não permite concluir.

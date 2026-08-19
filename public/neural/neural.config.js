@@ -1,0 +1,70 @@
+export const RUNTIME_MODULES = [
+  { id: 'intake', name: 'Entrada', description: 'Recebe e valida a solicitação.' },
+  { id: 'planner', name: 'Planejador', description: 'Classifica a intenção e organiza o trabalho.' },
+  { id: 'context', name: 'Contexto', description: 'Seleciona conversa, projeto e memória.' },
+  { id: 'suprememind', name: 'SupremeMind', description: 'Consulta estrutura, relações e conhecimento.' },
+  { id: 'router', name: 'Roteador', description: 'Escolhe uma rota gratuita compatível.' },
+  { id: 'provider', name: 'Modelo', description: 'Executa a inferência no provedor selecionado.' },
+  { id: 'tools', name: 'Ferramentas', description: 'Lê, altera e verifica o projeto com permissão.' },
+  { id: 'response', name: 'Resposta', description: 'Consolida, persiste e entrega o resultado.' },
+  { id: 'memory', name: 'Memória', description: 'Preserva decisões e continuidade da tarefa.' },
+  { id: 'guardian', name: 'Guardião', description: 'Aplica política, limites e aprovações.' }
+];
+
+export const RUNTIME_EDGES = [
+  ['intake', 'planner'], ['planner', 'context'], ['context', 'suprememind'],
+  ['context', 'router'], ['router', 'provider'], ['provider', 'tools'],
+  ['tools', 'provider'], ['provider', 'response'], ['response', 'memory'],
+  ['guardian', 'router'], ['guardian', 'tools']
+];
+
+export const EVENT_MODULES = {
+  'agent.request.accepted': ['intake', 'planner'],
+  'agent.task.contract': ['intake', 'planner'],
+  'agent.local.analysis': ['context', 'suprememind', 'response'],
+  'agent.inference.started': ['context', 'router', 'provider'],
+  'agent.inference.completed': ['provider', 'response'],
+  'agent.verification': ['guardian', 'response'],
+  'agent.route': ['planner', 'context'],
+  'agent.attempt': ['context', 'router', 'provider'],
+  'agent.context.compact': ['context', 'memory'],
+  'agent.fallback': ['router', 'provider'],
+  'agent.continuation': ['provider', 'response'],
+  'agent.recovery': ['router', 'provider'],
+  'agent.complete': ['provider', 'response', 'memory'],
+  'agent.failed': ['router', 'provider'],
+  'agent.stopped': ['planner', 'provider'],
+  'agent.handoff.started': ['context', 'router'],
+  'agent.handoff.completed': ['router', 'memory'],
+  'agent.approval.required': ['guardian', 'tools'],
+  'agent.tool.started': ['guardian', 'tools'],
+  'agent.tool.completed': ['tools', 'response'],
+  'agent.tool.denied': ['guardian', 'tools'],
+  'agent.tool.failed': ['guardian', 'tools'],
+  'agent.image.attempt': ['router', 'provider'],
+  'agent.image.fallback': ['router', 'provider'],
+  'agent.image.complete': ['provider', 'response'],
+  'policy.adult_content.blocked': ['guardian'],
+  'permissions.updated': ['guardian'],
+  'system.permissions.updated': ['guardian'],
+  'suprememind.init': ['suprememind'],
+  'suprememind.index.progress': ['suprememind', 'context'],
+  'suprememind.index.complete': ['suprememind', 'context'],
+  'suprememind.memory.saved': ['suprememind', 'memory'],
+  'storage.project.opened': ['context', 'suprememind'],
+  'storage.project.opened.editable': ['context', 'suprememind'],
+  'storage.project.closed': ['context'],
+  'storage.conversation.persisted': ['response', 'memory'],
+  'conversation.created': ['memory'],
+  'conversation.updated': ['memory'],
+  'conversation.deleted': ['memory'],
+  'providers.openrouter.connected': ['router', 'provider'],
+  'providers.openrouter.disconnected': ['router', 'provider'],
+  'providers.refresh': ['router'],
+  'providers.refreshed': ['router'],
+  'task.ledger.warning': ['planner', 'memory', 'guardian'],
+  'openrouter.connected': ['router', 'provider'],
+  'openrouter.disconnected': ['router', 'provider']
+};
+
+export const VIEW_IDS = ['overview', 'execution', 'graph', 'context', 'impact', 'memory', 'diagnostics'];
