@@ -24,7 +24,7 @@ function localMutationCompletionReport(evidence) {
       const args = JSON.parse(item.arguments || '{}');
       target = args.path || args.to || args.from || '';
     } catch { /* argumentos já foram sanitizados; o resumo continua suficiente */ }
-    lines.push(`- ${target ? `\`${target}\`: ` : ''}${item.summary || `${item.tool} concluída.`}`);
+    lines.push(`- ${target ? `\`${target}\`` : ''}${item.summary || `${item.tool} concluída.`}`);
   }
   lines.push('', '### Verificação', '');
   if (checks.length) {
@@ -703,9 +703,13 @@ export class GenesisOrchestrator {
               _taskEvidence,
               item => item.tool === 'run_project_check'
             );
+            // Enquanto a alteração obrigatória não aconteceu, a última chamada deve
+            // continuar disponível para escrever. Uma síntese em texto nunca vale mais
+            // que a mutação real solicitada pelo usuário.
+            const phaseReserveFinal = mutationRequired && !mutationDone ? 0 : reserveFinal;
             const availableToolBatches = toolBatches + Math.max(0, Math.min(
               routeRoundLimit - toolRound - 1,
-              requestBudget.remaining - reserveFinal
+              requestBudget.remaining - phaseReserveFinal
             ));
             const reservedMutationBatches = mutationRequired && !mutationDone ? 1 : 0;
             const reservedVerificationBatches = mutationRequired && checkToolAvailable && !verificationDone ? 1 : 0;
@@ -726,7 +730,7 @@ export class GenesisOrchestrator {
               && toolBatches < explorationLimit
               && !lowInputBudget;
             const canUseTools = requirements.tools
-              && requestBudget.remaining > reserveFinal
+              && requestBudget.remaining > phaseReserveFinal
               && (explorationPhase || mutationPhase || verificationPhase);
             let roundTools = [];
             if (canUseTools && mutationPhase) {
@@ -835,7 +839,18 @@ export class GenesisOrchestrator {
               budget: requestBudget.snapshot()
             });
             totalLatencyMs += Number(result.latencyMs || 0);
-            if (!result.toolCalls?.length) break;
+            if (!result.toolCalls?.length) {
+              if (mutationPhase && !mutationDone && requestBudget.remaining > 0) {
+                if (result.content) workingMessages.push({ role: 'assistant', content: result.content });
+                workingMessages.push({
+                  role: 'system',
+                  content: 'A resposta anterior não executou a alteração obrigatória. Não finalize em texto. Chame agora uma das ferramentas de escrita habilitadas e aplique a mudança real no projeto.'
+                });
+                result = null;
+                continue;
+              }
+              break;
+            }
 
             if (!roundTools.length) {
               const error = new Error('O modelo tentou solicitar uma ferramenta depois do encerramento do orçamento de exploração.');
@@ -850,6 +865,8 @@ export class GenesisOrchestrator {
               tool_calls: result.toolCalls
             });
             const allowedCalls = result.toolCalls.slice(0, maxCallsPerBatch);
+            const enabledToolNames = new Set(roundTools.map(tool => tool?.function?.name).filter(Boolean));
+            let rejectedPhaseTool = false;
             for (let callIndex = 0; callIndex < result.toolCalls.length; callIndex += 1) {
               const toolCall = result.toolCalls[callIndex];
               if (signal?.aborted) throw Object.assign(new Error('Solicitação interrompida pelo usuário.'), { code: 'request_cancelled', category: 'cancelled' });
@@ -857,6 +874,14 @@ export class GenesisOrchestrator {
               let toolResult;
               if (!allowedCalls.includes(toolCall)) {
                 toolResult = { ok: false, skipped: true, message: `O lote foi limitado a ${maxCallsPerBatch} ferramentas para proteger o orçamento.` };
+              } else if (!enabledToolNames.has(toolCall.function.name)) {
+                rejectedPhaseTool = true;
+                toolResult = {
+                  ok: false,
+                  skipped: true,
+                  code: 'tool_not_enabled_for_phase',
+                  message: `A ferramenta “${toolCall.function.name}” não está habilitada nesta fase. Use somente: ${[...enabledToolNames].join(', ') || 'nenhuma ferramenta'}.`
+                };
               } else if (deniedToolCalls.has(signature)) {
                 toolResult = { ok: false, denied: true, message: 'Esta mesma operação já foi negada pelo usuário nesta tarefa.' };
               } else if (executedToolCalls.has(signature)) {
@@ -887,6 +912,12 @@ export class GenesisOrchestrator {
                 content: compacted.content
               });
             }
+            if (rejectedPhaseTool && mutationPhase) {
+              workingMessages.push({
+                role: 'system',
+                content: 'A leitura solicitada foi recusada porque a fase de exploração terminou. Não leia mais arquivos agora. Use uma ferramenta de escrita habilitada e execute a alteração solicitada.'
+              });
+            }
             toolBatches += 1;
             crossRouteToolMessages = workingMessages
               .filter(message => message.role === 'tool' || (message.role === 'assistant' && message.tool_calls?.length))
@@ -894,10 +925,26 @@ export class GenesisOrchestrator {
             result = null;
           }
           if (!result?.content) {
-            const error = new Error('O modelo excedeu o limite seguro de etapas de ferramenta.');
-            error.category = 'model';
-            error.code = 'tool_round_limit';
-            throw error;
+            const mutationDoneAfterRounds = hasSuccessfulEvidence(
+              _taskEvidence,
+              item => MUTATION_TOOL_NAMES.has(item.tool)
+            );
+            if (['change', 'fix'].includes(taskContract?.kind) && mutationDoneAfterRounds) {
+              result = {
+                content: localMutationCompletionReport(_taskEvidence),
+                model: candidate.model,
+                resolvedModel: candidate.model,
+                resolvedProvider: provider.name,
+                latencyMs: totalLatencyMs,
+                finishReason: 'stop',
+                usage: {}
+              };
+            } else {
+              const error = new Error('O modelo excedeu o limite seguro de etapas de ferramenta.');
+              error.category = 'model';
+              error.code = 'tool_round_limit';
+              throw error;
+            }
           }
 
           for (let continuation = 0; continuation < 2 && result.finishReason === 'length' && requestBudget.remaining > 0; continuation += 1) {
