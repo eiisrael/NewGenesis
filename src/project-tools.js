@@ -98,9 +98,20 @@ async function packageScripts(root) {
   }
 }
 
-async function automaticCommand(root) {
+function npmCommand(args, script, detected) {
   const windows = process.platform === 'win32';
-  const executable = name => windows && name === 'npm' ? 'npm.cmd' : name;
+  return {
+    program: windows ? 'npm.cmd' : 'npm',
+    args,
+    preview: `npm ${args.join(' ')} → ${redactText(script, 500)}`,
+    detected,
+    // Node não executa .cmd diretamente via execFile no Windows. O shell é usado
+    // apenas para este comando npm conhecido; programa e argumentos não vêm do modelo.
+    shell: windows
+  };
+}
+
+async function automaticCommand(root) {
   const scripts = await packageScripts(root);
   for (const [name, args] of [
     ['test', ['test']],
@@ -109,9 +120,7 @@ async function automaticCommand(root) {
     ['typecheck', ['run', 'typecheck']],
     ['check', ['run', 'check']]
   ]) {
-    if (usefulNpmScript(scripts[name])) {
-      return { program: executable('npm'), args, preview: `npm ${args.join(' ')} → ${redactText(scripts[name], 500)}`, detected: name };
-    }
+    if (usefulNpmScript(scripts[name])) return npmCommand(args, scripts[name], name);
   }
   if (await exists(path.join(root, 'pyproject.toml')) || await exists(path.join(root, 'pytest.ini'))) {
     return { program: 'python', args: ['-m', 'pytest'], preview: 'python -m pytest', detected: 'tests' };
@@ -129,15 +138,13 @@ async function automaticCommand(root) {
 }
 
 async function commandFor(root, check) {
-  const windows = process.platform === 'win32';
-  const executable = name => windows && name === 'npm' ? 'npm.cmd' : name;
   if (check === 'auto') return automaticCommand(root);
   if (check === 'status') return { program: 'git', args: ['status', '--short'], preview: 'git status --short', detected: 'status' };
   if (check === 'diff') return { program: 'git', args: ['diff', '--check'], preview: 'git diff --check', detected: 'diff' };
   const scripts = await packageScripts(root);
-  if (check === 'tests' && usefulNpmScript(scripts.test)) return { program: executable('npm'), args: ['test'], preview: `npm test → ${redactText(scripts.test, 500)}`, detected: 'tests' };
-  if (check === 'lint' && usefulNpmScript(scripts.lint)) return { program: executable('npm'), args: ['run', 'lint'], preview: `npm run lint → ${redactText(scripts.lint, 500)}`, detected: 'lint' };
-  if (check === 'build' && usefulNpmScript(scripts.build)) return { program: executable('npm'), args: ['run', 'build'], preview: `npm run build → ${redactText(scripts.build, 500)}`, detected: 'build' };
+  if (check === 'tests' && usefulNpmScript(scripts.test)) return npmCommand(['test'], scripts.test, 'tests');
+  if (check === 'lint' && usefulNpmScript(scripts.lint)) return npmCommand(['run', 'lint'], scripts.lint, 'lint');
+  if (check === 'build' && usefulNpmScript(scripts.build)) return npmCommand(['run', 'build'], scripts.build, 'build');
   if (check === 'tests' && (await exists(path.join(root, 'pyproject.toml')) || await exists(path.join(root, 'pytest.ini')))) return { program: 'python', args: ['-m', 'pytest'], preview: 'python -m pytest', detected: 'tests' };
   if (check === 'tests' && await exists(path.join(root, 'Cargo.toml'))) return { program: 'cargo', args: ['test'], preview: 'cargo test', detected: 'tests' };
   if (check === 'build' && await exists(path.join(root, 'Cargo.toml'))) return { program: 'cargo', args: ['check'], preview: 'cargo check', detected: 'build' };
@@ -206,8 +213,6 @@ export class ProjectToolExecutor {
       operation.detail = command.preview || [command.program, ...command.args].join(' ');
     }
 
-    // O modo "full" é realmente autônomo para todas as ferramentas seguras já
-    // limitadas pelo executor. O modo "ask" continua exigindo aprovação humana.
     if (privileged && this.permissionStore.mode === 'ask') {
       const approval = this.approvalManager.request({ conversationId, operation, signal });
       onEvent('approval_required', { approvalId: approval.id, ...operation });
@@ -305,7 +310,8 @@ export class ProjectToolExecutor {
         maxBuffer: 1024 * 1024,
         encoding: 'utf8',
         signal,
-        env: safeCommandEnvironment()
+        env: safeCommandEnvironment(),
+        shell: command.shell === true
       });
       const output = sanitizeModelText(`${stdout || ''}${stderr ? `\n${stderr}` : ''}`.trim(), {
         maxCharacters: 18_000,

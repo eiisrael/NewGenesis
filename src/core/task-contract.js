@@ -99,9 +99,10 @@ function toolPolicyFor(kind, text, complexity = 'low') {
     if (requestsDeletion(text)) allowed.push('delete_project_path');
     const explorationBatches = complexity === 'high' ? 4 : complexity === 'medium' ? 3 : 2;
     return {
-      strategy: 'agentic_edit',
+      // Nome preservado por compatibilidade com integrações antigas; o comportamento
+      // agora é agentic, sequencial, search-first e com escrita obrigatória.
+      strategy: 'bounded_agent',
       allowed,
-      // O orquestrador usa maxBatches como teto de exploração antes de forçar escrita.
       maxBatches: explorationBatches,
       maxExplorationBatches: explorationBatches,
       maxMutationAttempts: complexity === 'high' ? 5 : 4,
@@ -148,13 +149,15 @@ function stepsFor(kind) {
 function requestPolicy(kind, complexity) {
   if (kind === 'project_overview') return { limit: 0, inputTokenLimit: 0, maxRequestInputTokens: 0, reserveFinal: 0, deadlineMs: 0 };
   if (['change', 'fix'].includes(kind)) {
-    const limit = complexity === 'high' ? 14 : complexity === 'medium' ? 10 : 8;
-    const inputTokenLimit = complexity === 'high' ? 144_000 : complexity === 'medium' ? 96_000 : 72_000;
+    // Edições comuns precisam ser econômicas: busca -> contexto mínimo -> escrita ->
+    // verificação -> síntese. Só tarefas realmente amplas ganham orçamento de 14.
+    const limit = complexity === 'high' ? 14 : 6;
+    const inputTokenLimit = complexity === 'high' ? 144_000 : 72_000;
     const maxRequestInputTokens = complexity === 'high' ? 16_000 : 14_000;
     const deadlineMs = complexity === 'high' ? 240_000 : 180_000;
-    // A síntese final pode ser construída localmente a partir das evidências. Nunca
-    // sacrificar a última oportunidade de escrita para produzir prosa.
-    return { limit, inputTokenLimit, maxRequestInputTokens, reserveFinal: 0, deadlineMs };
+    // O orquestrador ignora esta reserva enquanto nenhuma mutação aconteceu; depois
+    // da escrita, uma chamada fica protegida para a síntese final.
+    return { limit, inputTokenLimit, maxRequestInputTokens, reserveFinal: 1, deadlineMs };
   }
   if (['analysis', 'diagnose'].includes(kind)) {
     return { limit: 3, inputTokenLimit: 30_000, maxRequestInputTokens: 14_000, reserveFinal: 1, deadlineMs: 90_000 };
