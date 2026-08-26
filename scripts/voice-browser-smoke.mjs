@@ -41,7 +41,7 @@ async function waitForFile(file, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { return await fs.readFile(file, 'utf8'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    catch (error) { if (!['ENOENT', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   throw new Error(`Browser não abriu a porta de depuração em ${timeoutMs}ms.`);
