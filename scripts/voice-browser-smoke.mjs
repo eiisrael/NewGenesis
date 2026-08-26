@@ -106,12 +106,13 @@ async function withBrowser(executable, url, initScript, assertions) {
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'
   ], { stdio: 'ignore', windowsHide: true });
+  let cdp = null;
   try {
     const activePort = (await waitForFile(path.join(profile, 'DevToolsActivePort'))).trim().split(/\r?\n/)[0];
     const targets = await (await fetch(`http://127.0.0.1:${activePort}/json/list`)).json();
     const page = targets.find(target => target.type === 'page');
     assert.ok(page?.webSocketDebuggerUrl, 'uma página CDP deve estar disponível');
-    const cdp = await connectCdp(page.webSocketDebuggerUrl);
+    cdp = await connectCdp(page.webSocketDebuggerUrl);
     const errors = [];
     cdp.on('Runtime.exceptionThrown', event => errors.push(event.exceptionDetails?.exception?.description || event.exceptionDetails?.text));
     cdp.on('Runtime.consoleAPICalled', event => { if (event.type === 'error') errors.push('console.error'); });
@@ -124,26 +125,40 @@ async function withBrowser(executable, url, initScript, assertions) {
     await waitForExpression(cdp, `document.readyState === 'complete' && Boolean(document.querySelector('#genesisVoiceControl'))`);
     await assertions(cdp);
     assert.deepEqual(errors, [], `console/JS sem erros: ${errors.join(' | ')}`);
+    await Promise.race([
+      cdp.call('Browser.close').catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 1_000))
+    ]);
     cdp.close();
+    cdp = null;
   } finally {
-    const exited = new Promise(resolve => browser.once('exit', resolve));
-    browser.kill();
-    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 2_000))]);
-    await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    cdp?.close();
+    const exited = new Promise(resolve => browser.once('exit', () => resolve(true)));
+    if (browser.exitCode === null) browser.kill();
+    const closed = browser.exitCode !== null || await Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(false), 3_000))]);
+    if (!closed && browser.exitCode === null) {
+      browser.kill('SIGKILL');
+      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 2_000))]);
+    }
+    await fs.rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 
 const supportedVoice = `
   class FakeRecognition {
-    constructor() { window.__genesisRecognition = this; }
+    constructor() { window.__genesisRecognition = this; (window.__genesisRecognitions ||= []).push(this); }
     start() { queueMicrotask(() => this.onstart?.()); }
     stop() { queueMicrotask(() => this.onend?.()); }
     abort() { queueMicrotask(() => this.onend?.()); }
   }
+  class FakeUtterance { constructor(text) { this.text = text; } }
   Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: FakeRecognition });
   Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: FakeRecognition });
+  Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: FakeUtterance });
   Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
-    getVoices: () => [], addEventListener() {}, speak() {}, cancel() {}
+    getVoices: () => [], addEventListener() {},
+    speak(utterance) { window.__genesisUtterance = utterance; queueMicrotask(() => utterance.onstart?.()); },
+    cancel() { window.__genesisCancelCount = (window.__genesisCancelCount || 0) + 1; const active = window.__genesisUtterance; window.__genesisUtterance = null; queueMicrotask(() => active?.onerror?.({ error: 'canceled' })); }
   } });
 `;
 
@@ -199,6 +214,58 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         listening: true, transcript: 'teste de voz', styled: true, noInlineVoiceStyle: true,
         popoverOpen: true, micLabel: true, optionsExpanded: true
       });
+
+      const conversation = await evaluate(cdp, `(async () => {
+        const wait = () => new Promise(resolve => setTimeout(resolve, 0));
+        const form = document.querySelector('#composerForm');
+        let submissions = 0;
+        form.requestSubmit = () => { submissions += 1; };
+        const mode = document.querySelector('#voiceConversationMode');
+        mode.checked = true;
+        mode.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait();
+        const firstState = window.__genesisVoice.controller.machine.current;
+        let recognition = window.__genesisRecognition;
+        recognition.onspeechstart?.();
+        const first = [{ transcript: 'explique o SupremeMind' }]; first.isFinal = true;
+        recognition.onresult({ resultIndex: 0, results: [first] });
+        recognition.onend();
+        await wait();
+        const thinkingState = window.__genesisVoice.controller.machine.current;
+        document.dispatchEvent(new CustomEvent('genesis:chat-start'));
+        document.dispatchEvent(new CustomEvent('genesis:chat-delta', { detail: { content: 'O SupremeMind preserva o contexto. ' } }));
+        await wait();
+        const speakingState = window.__genesisVoice.controller.machine.current;
+        document.dispatchEvent(new CustomEvent('genesis:chat-end'));
+        window.__genesisUtterance.onend();
+        await wait(); await wait();
+        const resumedState = window.__genesisVoice.controller.machine.current;
+
+        document.dispatchEvent(new CustomEvent('genesis:chat-start'));
+        document.dispatchEvent(new CustomEvent('genesis:chat-delta', { detail: { content: 'Genesis está falando esta resposta. ' } }));
+        await wait();
+        recognition = window.__genesisRecognition;
+        const cancelBefore = window.__genesisCancelCount || 0;
+        recognition.onspeechstart?.();
+        const interruptedState = window.__genesisVoice.controller.machine.current;
+        const second = [{ transcript: 'nova pergunta agora' }]; second.isFinal = true;
+        recognition.onresult({ resultIndex: 0, results: [second] });
+        recognition.onend();
+        await wait();
+        mode.checked = false;
+        mode.dispatchEvent(new Event('change', { bubbles: true }));
+        return {
+          firstState, thinkingState, speakingState, resumedState, interruptedState,
+          submissions, ttsCancelled: (window.__genesisCancelCount || 0) > cancelBefore,
+          finalComposer: document.querySelector('#messageInput').value,
+          finalState: window.__genesisVoice.controller.machine.current
+        };
+      })()`);
+      assert.deepEqual(conversation, {
+        firstState: 'LISTENING', thinkingState: 'THINKING', speakingState: 'SPEAKING', resumedState: 'LISTENING',
+        interruptedState: 'SPEECH_DETECTED', submissions: 2, ttsCancelled: true,
+        finalComposer: 'nova pergunta agora', finalState: 'IDLE'
+      });
     });
 
     await withBrowser(executable, url, unsupportedVoice, async cdp => {
@@ -220,7 +287,7 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         textPreserved: 'composer textual funcional', sendEnabled: true, micLabel: true
       });
     });
-    console.log('voice browser smoke: ok (supported + degraded)');
+    console.log('voice browser smoke: ok (conversation + barge-in + degraded)');
   } finally {
     if (runtime) await runtime.shutdown();
     if (previousPort === undefined) delete process.env.GENESIS_PORT; else process.env.GENESIS_PORT = previousPort;
