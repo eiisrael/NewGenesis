@@ -2117,6 +2117,10 @@ function setSending(active) {
   elements.runtimeStatus.textContent = active ? 'Genesis em execução' : 'Genesis pronto';
 }
 
+function emitChatLifecycle(name, detail = {}) {
+  document.dispatchEvent(new CustomEvent(`genesis:chat-${name}`, { detail }));
+}
+
 function stopCurrentRequest() {
   if (!state.sending || !state.activeRequestController || state.activeRequestController.signal.aborted) return;
   state.stopRequested = true;
@@ -2180,7 +2184,9 @@ function handleStreamEvent(event, payload) {
     if (state.current) state.current.messages = state.current.messages.filter(message => message.id !== 'temp-stream');
     renderMessages();
   } else if (event === 'delta') {
-    state.streamingContent += String(payload.content || '');
+    const delta = String(payload.content || '');
+    state.streamingContent += delta;
+    if (delta) emitChatLifecycle('delta', { content: delta });
     if (state.current && state.streamingContent) {
       const existing = state.current.messages.find(message => message.id === 'temp-stream');
       if (existing) existing.content = state.streamingContent;
@@ -2373,6 +2379,7 @@ async function sendMessage(prefill, options = {}) {
   setThinking(true, outgoingAttachments.length ? 'Preparando anexos' : undefined, outgoingAttachments.length ? `Validando ${outgoingAttachments.length} arquivo${outgoingAttachments.length === 1 ? '' : 's'} antes do envio…` : undefined);
   let streamError = null;
   let accepted = false;
+  emitChatLifecycle('start', { conversationId, source: options.source || 'composer' });
   try {
     const attachments = await Promise.all(outgoingAttachments.map(attachment => fileDataUrl(attachment, requestController.signal)));
     if (requestController.signal.aborted) throw new DOMException('Resposta interrompida.', 'AbortError');
@@ -2392,6 +2399,8 @@ async function sendMessage(prefill, options = {}) {
     });
     if (streamError) throw streamError;
     await bootstrapConversation(conversationId);
+    const lastAssistant = [...(state.current?.messages || [])].reverse().find(message => message.role === 'assistant');
+    emitChatLifecycle('end', { conversationId, content: lastAssistant?.content || '' });
   } catch (error) {
     if (requestController.signal.aborted || error?.name === 'AbortError') {
       addTimeline('stopped', 'Resposta interrompida', 'A rota ativa foi cancelada; nenhuma resposta incompleta foi salva.');
@@ -2399,6 +2408,7 @@ async function sendMessage(prefill, options = {}) {
     } else {
       toast(error.message, 'error');
     }
+    emitChatLifecycle('error', { conversationId, error: { name: error?.name || 'Error', message: error?.message || 'Falha no chat.' } });
     await bootstrapConversation(conversationId).catch(() => {});
   } finally {
     if (accepted) outgoingAttachments.forEach(attachment => {
