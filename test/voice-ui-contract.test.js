@@ -15,7 +15,19 @@ test('UI de voz usa o mesmo composer e histórico canônico do chat', () => {
 
 test('index carrega a camada de voz separadamente do motor do chat', () => {
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-  assert.match(html, /\/app\.js\?v=2\.3\.0/);
-  assert.match(html, /\/voice\.js\?v=2\.3\.0/);
-  assert.match(html, /Gênesis v2\.3\.0/);
+  assert.match(html, /src="\/app\.js"/);
+  assert.match(html, /src="\/voice\.js"/);
+  assert.doesNotMatch(html, /[?&]v=\d+\.\d+\.\d+/);
+});
+
+test('voz respeita a CSP estrita e usa somente CSS estático same-origin', () => {
+  const voice = fs.readFileSync(new URL('../public/voice.js', import.meta.url), 'utf8');
+  const styles = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const server = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(voice, /createElement\(['"]style['"]\)|injectStyles|style\.textContent/);
+  assert.match(styles, /\.genesis-voice-button/);
+  assert.match(styles, /\.genesis-voice-popover/);
+  assert.match(server, /style-src 'self'/);
+  assert.doesNotMatch(server, /style-src[^\n]*unsafe-inline/);
+  assert.match(server, /microphone=\(self\)/);
 });

@@ -71,31 +71,6 @@ function savePreferences() {
   }));
 }
 
-function injectStyles() {
-  const style = document.createElement('style');
-  style.dataset.genesisVoice = 'true';
-  style.textContent = `
-    .genesis-voice-control{position:relative;display:inline-flex;align-items:center;gap:6px}
-    .genesis-voice-button{width:36px;height:36px;border:1px solid var(--border,rgba(145,158,190,.18));border-radius:11px;background:rgba(255,255,255,.035);color:inherit;display:grid;place-items:center;cursor:pointer;transition:.18s ease}
-    .genesis-voice-button:hover{transform:translateY(-1px);border-color:rgba(139,92,246,.48);background:rgba(139,92,246,.09)}
-    .genesis-voice-button svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-    .genesis-voice-button.listening{border-color:#ef476f;background:rgba(239,71,111,.14);box-shadow:0 0 0 4px rgba(239,71,111,.08)}
-    .genesis-voice-button.listening:after{content:'';position:absolute;width:7px;height:7px;border-radius:50%;background:#ef476f;right:2px;top:2px;animation:genesisVoicePulse 1s ease-in-out infinite}
-    .genesis-voice-button.speaking{border-color:#8b5cf6;background:rgba(139,92,246,.14)}
-    .genesis-voice-button:disabled{opacity:.4;cursor:not-allowed;transform:none}
-    @keyframes genesisVoicePulse{50%{transform:scale(1.5);opacity:.45}}
-    .genesis-voice-popover{position:absolute;left:0;bottom:46px;width:min(330px,calc(100vw - 34px));padding:14px;border:1px solid rgba(145,158,190,.2);border-radius:16px;background:var(--panel,#111621);box-shadow:0 22px 60px rgba(0,0,0,.34);z-index:80;display:grid;gap:12px}
-    .genesis-voice-popover[hidden]{display:none}
-    .genesis-voice-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.genesis-voice-heading strong{font-size:12px;letter-spacing:.13em}.genesis-voice-heading span{font-size:11px;opacity:.62}
-    .genesis-voice-option{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}.genesis-voice-option input{accent-color:#8b5cf6}
-    .genesis-voice-field{display:grid;gap:6px;font-size:12px;opacity:.9}.genesis-voice-field select,.genesis-voice-field input[type=range]{width:100%}.genesis-voice-field select{border:1px solid rgba(145,158,190,.18);border-radius:9px;padding:8px;background:rgba(255,255,255,.04);color:inherit}
-    .genesis-voice-note{font-size:10.5px;line-height:1.45;opacity:.58}
-    .genesis-voice-status{font-size:11px;min-height:16px;color:#a78bfa}
-    .message-action-button.genesis-message-speak{display:inline-flex;align-items:center;gap:5px}.message-action-button.genesis-message-speak svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.8}
-  `;
-  document.head.append(style);
-}
-
 function iconMicrophone() {
   return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg>';
 }
@@ -110,7 +85,7 @@ function buildControls() {
   wrapper.className = 'genesis-voice-control';
   wrapper.id = 'genesisVoiceControl';
   wrapper.innerHTML = `
-    <button class="genesis-voice-button" id="voiceMicButton" type="button">${iconMicrophone()}</button>
+    <button class="genesis-voice-button" id="voiceMicButton" type="button" aria-pressed="false">${iconMicrophone()}</button>
     <button class="genesis-voice-button" id="voiceOptionsButton" type="button" aria-expanded="false">${iconSpeaker()}</button>
     <div class="genesis-voice-popover" id="voicePopover" hidden>
       <div class="genesis-voice-heading"><strong data-voice-label="title"></strong><span data-voice-status></span></div>
@@ -320,7 +295,9 @@ function toggleListening() {
   recognition.maxAlternatives = 1;
   recognition.onstart = () => {
     state.listening = true;
-    document.querySelector('#voiceMicButton')?.classList.add('listening');
+    const mic = document.querySelector('#voiceMicButton');
+    mic?.classList.add('listening');
+    mic?.setAttribute('aria-pressed', 'true');
     setVoiceStatus(t('listening'));
     updateLabels();
   };
@@ -346,7 +323,9 @@ function toggleListening() {
     const transcript = state.finalTranscript.trim();
     state.listening = false;
     state.recognition = null;
-    document.querySelector('#voiceMicButton')?.classList.remove('listening');
+    const mic = document.querySelector('#voiceMicButton');
+    mic?.classList.remove('listening');
+    mic?.setAttribute('aria-pressed', 'false');
     updateLabels();
     updateAvailability();
     if (transcript) setVoiceStatus('');
@@ -424,7 +403,6 @@ function bindKeyboard() {
 function bootstrapVoice() {
   if (!composer || !input || !tools) return;
   readPreferences();
-  injectStyles();
   buildControls();
   populateVoices();
   if (synthesis) synthesis.addEventListener?.('voiceschanged', populateVoices);
