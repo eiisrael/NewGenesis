@@ -100,28 +100,44 @@ async function packageScripts(root) {
 
 function npmCommand(args, script, detected) {
   const windows = process.platform === 'win32';
+  const displayCommand = `${windows ? 'npm.cmd' : 'npm'} ${args.join(' ')}`;
   return {
-    program: windows ? 'npm.cmd' : 'npm',
-    args,
+    program: windows ? (process.env.ComSpec || process.env.COMSPEC || 'cmd.exe') : 'npm',
+    args: windows ? ['/d', '/s', '/c', displayCommand] : args,
     preview: `npm ${args.join(' ')} → ${redactText(script, 500)}`,
     detected,
-    // Node não executa .cmd diretamente via execFile no Windows. O shell é usado
-    // apenas para este comando npm conhecido; programa e argumentos não vêm do modelo.
-    shell: windows
+    displayCommand
   };
+}
+
+function clearlyAggregatesChecks(source, scripts) {
+  const command = String(source || '').toLowerCase();
+  const signals = new Set();
+  if (/\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|\bnode\s+--test\b|\bpytest\b|\bcargo\s+test\b|\bgo\s+test\b/.test(command)) signals.add('test');
+  if (/\blint\b|\beslint\b|\bbiome\s+(?:check|lint)\b/.test(command)) signals.add('lint');
+  if (/\btypecheck\b|\btsc\b/.test(command)) signals.add('typecheck');
+  if (/\bbuild\b/.test(command)) signals.add('build');
+  if (/\bnode\s+--check\b/.test(command)) signals.add('syntax');
+  for (const name of ['test', 'lint', 'typecheck', 'build']) {
+    if (usefulNpmScript(scripts[name]) && new RegExp(`\\b(?:npm|pnpm|yarn)\\s+(?:run\\s+)?${name}\\b`).test(command)) signals.add(name);
+  }
+  return signals.size >= 2;
 }
 
 async function automaticCommand(root) {
   const scripts = await packageScripts(root);
+  if (usefulNpmScript(scripts.check) && clearlyAggregatesChecks(scripts.check, scripts)) {
+    return npmCommand(['run', 'check'], scripts.check, 'check');
+  }
   for (const [name, args] of [
     ['test', ['test']],
     ['lint', ['run', 'lint']],
     ['build', ['run', 'build']],
-    ['typecheck', ['run', 'typecheck']],
-    ['check', ['run', 'check']]
+    ['typecheck', ['run', 'typecheck']]
   ]) {
     if (usefulNpmScript(scripts[name])) return npmCommand(args, scripts[name], name);
   }
+  if (usefulNpmScript(scripts.check)) return npmCommand(['run', 'check'], scripts.check, 'check');
   if (await exists(path.join(root, 'pyproject.toml')) || await exists(path.join(root, 'pytest.ini'))) {
     return { program: 'python', args: ['-m', 'pytest'], preview: 'python -m pytest', detected: 'tests' };
   }
@@ -311,7 +327,7 @@ export class ProjectToolExecutor {
         encoding: 'utf8',
         signal,
         env: safeCommandEnvironment(),
-        shell: command.shell === true
+        shell: false
       });
       const output = sanitizeModelText(`${stdout || ''}${stderr ? `\n${stderr}` : ''}`.trim(), {
         maxCharacters: 18_000,
@@ -320,7 +336,7 @@ export class ProjectToolExecutor {
       return {
         check: args.check || 'auto',
         detectedCheck: command.detected || args.check,
-        command: [command.program, ...command.args].join(' '),
+        command: command.displayCommand || [command.program, ...command.args].join(' '),
         output,
         summary: `Verificação “${command.detected || args.check || 'auto'}” concluída com sucesso.`
       };

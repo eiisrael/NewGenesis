@@ -52,3 +52,36 @@ test('modo full executa verificação automática sem pedir aprovação', async 
   assert.equal(result.ok, true);
   assert.equal(result.detectedCheck, 'test');
 });
+
+test('auto prefere check claramente agregador a um test mais limitado', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-aggregate-check-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: {
+    test: 'node --test',
+    check: 'node --check index.js && node --test'
+  } }));
+  await fs.writeFile(path.join(root, 'index.js'), 'export const ok = true;\n');
+  const store = { summary: () => ({ writable: true }), rootPath: () => root };
+  const result = await executorWith(store, 'full').execute({ function: {
+    name: 'run_project_check', arguments: JSON.stringify({ check: 'auto' })
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(result.detectedCheck, 'check');
+  assert.match(result.command, /npm(?:\.cmd)? run check/);
+});
+
+test('auto não promove check nominal sem sinais de agregação', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-narrow-check-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: {
+    test: 'node --test',
+    check: 'node --check index.js'
+  } }));
+  await fs.writeFile(path.join(root, 'smoke.test.js'), 'import test from "node:test"; test("ok", () => {});\n');
+  const store = { summary: () => ({ writable: true }), rootPath: () => root };
+  const result = await executorWith(store, 'full').execute({ function: {
+    name: 'run_project_check', arguments: JSON.stringify({ check: 'auto' })
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(result.detectedCheck, 'test');
+});
