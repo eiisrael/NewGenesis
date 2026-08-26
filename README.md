@@ -1,4 +1,4 @@
-# NewGenesis 2.3.1
+# NewGenesis 2.4.0
 
 > **Autoria e direitos autorais:** © 2026 **Erick Israel**.  
 > Projeto distribuído sob a licença MIT. A autoria original e o aviso de copyright devem ser preservados conforme os termos do arquivo [`LICENSE`](LICENSE).
@@ -210,24 +210,25 @@ http://127.0.0.1:7331/neural/neural.html
 
 # Voz
 
-A voz funciona como uma camada progressiva sobre o mesmo composer e histórico do chat.
+A voz é uma camada modular sobre o mesmo composer, histórico e orquestrador. **Conversa por voz** detecta início/fim da fala, envia automaticamente, fala sentenças estáveis durante o streaming, volta a ouvir e aceita barge-in para cancelar TTS. Push-to-talk e chat textual continuam disponíveis.
 
-O NewGenesis utiliza, quando disponíveis no navegador:
+O core inicia sem Python/modelos. O modo compatível mantém `SpeechRecognition` e `speechSynthesis`; o modo leve local usa whisper.cpp+Silero e Piper pt-BR; Chatterbox pt-BR é opcional/experimental e exige aceite separado para mais de 3,21 GB.
 
-- `SpeechRecognition` / implementação compatível;
-- `speechSynthesis`.
+Para instalar o perfil local validado no Windows:
 
-Se essas APIs não estiverem disponíveis, **o chat textual continua funcionando normalmente** e os controles incompatíveis são desativados.
+```powershell
+npm run voice:diagnose
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile balanced -AcceptDownload
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component piper -AcceptDownload
+```
+
+Se as APIs e engines não estiverem disponíveis, **o chat textual continua funcionando normalmente** e os controles incompatíveis são desativados.
 
 ## Privacidade da voz
 
-O NewGenesis não armazena o áudio capturado pelo microfone.
+O áudio não é armazenado nem registrado. Arquivos temporários são removidos deterministicamente. O reconhecimento do navegador pode usar serviço online do fornecedor; **Preferir voz 100% local** impede esse fallback. O microfone é limitado à própria origem e a CSP continua `style-src 'self'; script-src 'self'`. As preferências ficam no armazenamento local do navegador.
 
-O reconhecimento de fala é fornecido pelo navegador. Dependendo do navegador e da implementação utilizada, o reconhecimento pode envolver um serviço online do próprio fornecedor do navegador.
-
-As preferências da interface de voz ficam no armazenamento local do navegador.
-
-A política de permissões limita o microfone à própria origem do NewGenesis, e o CSS da voz foi movido para arquivos estáticos para permanecer compatível com uma CSP estrita.
+Guias: [`docs/VOICE.md`](docs/VOICE.md), [`docs/VOICE_SETUP_WINDOWS.md`](docs/VOICE_SETUP_WINDOWS.md), [`docs/VOICE_ARCHITECTURE.md`](docs/VOICE_ARCHITECTURE.md), [`docs/VOICE_BENCHMARK.md`](docs/VOICE_BENCHMARK.md) e [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ---
 
@@ -451,6 +452,14 @@ npm run test:browser
 
 O smoke de navegador requer Chrome, Chromium ou Edge. Também é possível apontar explicitamente o executável com `CHROME_PATH`.
 
+## Benchmarks locais de voz
+
+```powershell
+npm run voice:benchmark:loopback
+npm run voice:benchmark:resources
+npm run voice:benchmark
+```
+
 ## SupremeMind
 
 ```powershell
@@ -467,6 +476,8 @@ SupremeMind check   4/4 testes aprovados + syntax + npm pack --dry-run
 ```
 
 Sem testes ignorados para esconder regressões.
+
+Neste branch 2.4, a validação de voz elevou a suíte principal para **179/179**, manteve SupremeMind em **4/4** e aprovou o smoke de conversa, barge-in e fallback textual.
 
 ---
 

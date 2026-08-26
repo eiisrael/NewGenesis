@@ -4,6 +4,23 @@ Todas as mudanças relevantes do NewGenesis serão documentadas neste arquivo.
 
 ## [Unreleased]
 
+### Adicionado
+
+- Conversa por voz mãos-livres com máquina de estados explícita, VAD adaptativo, auto-retomada, sentence streaming e barge-in.
+- Engines opcionais locais: whisper.cpp 1.8.6 + Silero VAD, Piper 1.4.2 pt-BR e adaptador experimental Chatterbox Multilingual V3 pt-BR.
+- Setup/diagnóstico Windows com venvs isolados, aceite de download, hashes, perfis e remoção limpa.
+- Métricas locais sem áudio, benchmark sintético/recurso e documentação completa de arquitetura, setup, privacidade e terceiros.
+
+### Segurança
+
+- Limites de áudio/texto/concorrência/tempo, caminhos confinados a `.genesis/voice`, subprocessos sem shell e limpeza determinística.
+- Preferência 100% local impede fallback silencioso para reconhecimento potencialmente online do navegador.
+
+### Testes
+
+- Cobertura de estado, VAD, WAV, normalização, fila/fallback, autoenvio, auto-retomada, barge-in, métricas, input hostil e cleanup.
+- Smoke real de navegador cobre o ciclo `LISTENING → TRANSCRIBING → THINKING → SPEAKING → LISTENING`, interrupção e degradação textual.
+
 ## [2.3.1] - futura
 
 ### Corrigido
