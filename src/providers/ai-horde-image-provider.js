@@ -97,7 +97,7 @@ export class AIHordeImageProvider {
     this.requestTimeoutMs = Number(options.requestTimeoutMs || 20000);
     this.generationTimeoutMs = Number(options.generationTimeoutMs || 180000);
     this.pollIntervalMs = Number(options.pollIntervalMs || 1500);
-    this.clientAgent = String(options.clientAgent || 'GenesisNew:2.0.0:https://github.com/eiisrael/GenesisPainel');
+    this.clientAgent = String(options.clientAgent || 'NewGenesis:https://github.com/eiisrael/NewGenesis');
   }
 
   headers(json = false) {

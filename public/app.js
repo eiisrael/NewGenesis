@@ -114,7 +114,7 @@ const UI_EN = {
   'Roteamento ao vivo': 'Live routing',
   'As decisões de rota aparecerão aqui durante a próxima resposta.': 'Routing decisions will appear here during the next response.',
   'Pensando...': 'Thinking...',
-  'Configurações 2.0': 'Settings 2.0',
+  'Configurações': 'Settings',
   'Perfil': 'Profile',
   'Conta e idioma': 'Account and language',
   'Conexão': 'Connection',
@@ -200,7 +200,7 @@ const UI_EN = {
   ,'Uso real da janela de contexto': 'Actual context-window usage'
   ,'Tokens restantes': 'Remaining tokens'
   ,'Categorias das configurações': 'Settings categories'
-  ,'Gênesis 2.0': 'Genesis 2.0'
+  ,'Gênesis': 'Genesis'
   ,'Somente rotas gratuitas; disponibilidade e filas podem variar.': 'Free routes only; availability and queues may vary.'
   ,'Todos os direitos reservados.': 'All rights reserved.'
   ,'Abrir pelo caminho': 'Open by path'

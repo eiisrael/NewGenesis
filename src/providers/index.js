@@ -26,7 +26,7 @@ export function createImageProviders(config, textProviders) {
     new AIHordeImageProvider({
       ...config.images.aiHorde,
       requestTimeoutMs: config.discoveryTimeoutMs,
-      clientAgent: `GenesisPainel:${config.version}:https://github.com/eiisrael/GenesisPainel`
+      clientAgent: `NewGenesis:${config.version}:https://github.com/eiisrael/NewGenesis`
     })
   ];
 }

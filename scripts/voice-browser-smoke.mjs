@@ -1,0 +1,230 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { startServer } from '../src/server.js';
+
+const projectRoot = path.resolve(import.meta.dirname, '..');
+
+async function exists(target) {
+  return target ? fs.access(target).then(() => true).catch(() => false) : false;
+}
+
+async function browserExecutable() {
+  const candidates = process.platform === 'win32'
+    ? [
+        process.env.CHROME_PATH,
+        path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+      ]
+    : process.platform === 'darwin'
+      ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']
+      : [process.env.CHROME_PATH, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+  for (const candidate of candidates.filter(Boolean)) if (await exists(candidate)) return candidate;
+  throw new Error('Chrome, Chromium ou Edge não encontrado. Defina CHROME_PATH para executar o smoke test de voz.');
+}
+
+async function freePort() {
+  const probe = net.createServer();
+  await new Promise((resolve, reject) => probe.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function waitForFile(file, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { return await fs.readFile(file, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`Browser não abriu a porta de depuração em ${timeoutMs}ms.`);
+}
+
+async function connectCdp(url) {
+  if (typeof WebSocket !== 'function') throw new Error('O smoke test de navegador requer Node.js 22 ou superior.');
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', reject, { once: true });
+  });
+  let sequence = 0;
+  const pending = new Map();
+  const listeners = new Map();
+  socket.addEventListener('message', event => {
+    const message = JSON.parse(String(event.data));
+    if (message.id) {
+      const entry = pending.get(message.id);
+      if (!entry) return;
+      pending.delete(message.id);
+      if (message.error) entry.reject(new Error(`${entry.method}: ${message.error.message}`));
+      else entry.resolve(message.result || {});
+      return;
+    }
+    for (const listener of listeners.get(message.method) || []) listener(message.params || {});
+  });
+  return {
+    call(method, params = {}) {
+      const id = ++sequence;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject, method });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+    },
+    on(method, listener) {
+      if (!listeners.has(method)) listeners.set(method, new Set());
+      listeners.get(method).add(listener);
+    },
+    close() { socket.close(); }
+  };
+}
+
+async function evaluate(cdp, expression) {
+  const response = await cdp.call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text);
+  return response.result?.value;
+}
+
+async function waitForExpression(cdp, expression, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await evaluate(cdp, expression)) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`A interface não atingiu o estado esperado: ${expression}`);
+}
+
+async function withBrowser(executable, url, initScript, assertions) {
+  const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-browser-'));
+  const browser = spawn(executable, [
+    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+    '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'
+  ], { stdio: 'ignore', windowsHide: true });
+  try {
+    const activePort = (await waitForFile(path.join(profile, 'DevToolsActivePort'))).trim().split(/\r?\n/)[0];
+    const targets = await (await fetch(`http://127.0.0.1:${activePort}/json/list`)).json();
+    const page = targets.find(target => target.type === 'page');
+    assert.ok(page?.webSocketDebuggerUrl, 'uma página CDP deve estar disponível');
+    const cdp = await connectCdp(page.webSocketDebuggerUrl);
+    const errors = [];
+    cdp.on('Runtime.exceptionThrown', event => errors.push(event.exceptionDetails?.exception?.description || event.exceptionDetails?.text));
+    cdp.on('Runtime.consoleAPICalled', event => { if (event.type === 'error') errors.push('console.error'); });
+    cdp.on('Log.entryAdded', event => { if (event.entry?.level === 'error') errors.push(event.entry.text); });
+    await cdp.call('Runtime.enable');
+    await cdp.call('Page.enable');
+    await cdp.call('Log.enable');
+    await cdp.call('Page.addScriptToEvaluateOnNewDocument', { source: initScript });
+    await cdp.call('Page.navigate', { url });
+    await waitForExpression(cdp, `document.readyState === 'complete' && Boolean(document.querySelector('#genesisVoiceControl'))`);
+    await assertions(cdp);
+    assert.deepEqual(errors, [], `console/JS sem erros: ${errors.join(' | ')}`);
+    cdp.close();
+  } finally {
+    const exited = new Promise(resolve => browser.once('exit', resolve));
+    browser.kill();
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 2_000))]);
+    await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}
+
+const supportedVoice = `
+  class FakeRecognition {
+    constructor() { window.__genesisRecognition = this; }
+    start() { queueMicrotask(() => this.onstart?.()); }
+    stop() { queueMicrotask(() => this.onend?.()); }
+    abort() { queueMicrotask(() => this.onend?.()); }
+  }
+  Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: FakeRecognition });
+  Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: FakeRecognition });
+  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
+    getVoices: () => [], addEventListener() {}, speak() {}, cancel() {}
+  } });
+`;
+
+const unsupportedVoice = `
+  Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: undefined });
+  Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: undefined });
+  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: undefined });
+`;
+
+if (process.argv[1] === path.resolve(import.meta.filename)) {
+  const executable = await browserExecutable();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-browser-root-'));
+  const previousPort = process.env.GENESIS_PORT;
+  const previousHost = process.env.GENESIS_HOST;
+  let runtime;
+  try {
+    await fs.cp(path.join(projectRoot, 'public'), path.join(root, 'public'), { recursive: true });
+    process.env.GENESIS_PORT = String(await freePort());
+    process.env.GENESIS_HOST = '127.0.0.1';
+    runtime = await startServer(root);
+    const url = `http://${runtime.config.host}:${runtime.config.port}`;
+    const response = await fetch(url);
+    assert.match(response.headers.get('content-security-policy') || '', /style-src 'self'/);
+    assert.doesNotMatch(response.headers.get('content-security-policy') || '', /unsafe-inline/);
+    assert.match(response.headers.get('permissions-policy') || '', /microphone=\(self\)/);
+
+    await withBrowser(executable, url, supportedVoice, async cdp => {
+      const result = await evaluate(cdp, `(async () => {
+        const mic = document.querySelector('#voiceMicButton');
+        const options = document.querySelector('#voiceOptionsButton');
+        const autoSend = document.querySelector('#voiceAutoSend');
+        autoSend.checked = false;
+        autoSend.dispatchEvent(new Event('change', { bubbles: true }));
+        options.click();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, shiftKey: true, bubbles: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const listening = mic.classList.contains('listening') && mic.getAttribute('aria-pressed') === 'true';
+        const transcript = [{ transcript: 'teste de voz' }]; transcript.isFinal = true;
+        window.__genesisRecognition.onresult({ resultIndex: 0, results: [transcript] });
+        window.__genesisRecognition.onend();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        return {
+          listening,
+          transcript: document.querySelector('#messageInput').value,
+          styled: getComputedStyle(mic).width === '36px',
+          noInlineVoiceStyle: !document.querySelector('style[data-genesis-voice]'),
+          popoverOpen: document.querySelector('#voicePopover').hidden === false,
+          micLabel: Boolean(mic.getAttribute('aria-label')),
+          optionsExpanded: options.getAttribute('aria-expanded') === 'true'
+        };
+      })()`);
+      assert.deepEqual(result, {
+        listening: true, transcript: 'teste de voz', styled: true, noInlineVoiceStyle: true,
+        popoverOpen: true, micLabel: true, optionsExpanded: true
+      });
+    });
+
+    await withBrowser(executable, url, unsupportedVoice, async cdp => {
+      const result = await evaluate(cdp, `(() => {
+        const input = document.querySelector('#messageInput');
+        input.value = 'composer textual funcional';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        return {
+          micDisabled: document.querySelector('#voiceMicButton').disabled,
+          speechDisabled: document.querySelector('#voiceAutoSpeak').disabled,
+          inputEnabled: !input.disabled,
+          textPreserved: input.value,
+          sendEnabled: !document.querySelector('#sendButton').disabled,
+          micLabel: Boolean(document.querySelector('#voiceMicButton').getAttribute('aria-label'))
+        };
+      })()`);
+      assert.deepEqual(result, {
+        micDisabled: true, speechDisabled: true, inputEnabled: true,
+        textPreserved: 'composer textual funcional', sendEnabled: true, micLabel: true
+      });
+    });
+    console.log('voice browser smoke: ok (supported + degraded)');
+  } finally {
+    if (runtime) await runtime.shutdown();
+    if (previousPort === undefined) delete process.env.GENESIS_PORT; else process.env.GENESIS_PORT = previousPort;
+    if (previousHost === undefined) delete process.env.GENESIS_HOST; else process.env.GENESIS_HOST = previousHost;
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}

@@ -1,13 +1,14 @@
 {
   "name": "genesis-new",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Agente local genérico com SupremeMind, contexto contínuo, execução agentic verificável, voz nativa e roteamento inteligente entre modelos gratuitos.",
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check public/app.js && node --check public/voice.js && node --test"
+    "test:browser": "node scripts/voice-browser-smoke.mjs",
+    "check": "node --check src/server.js && node --check src/runtime-lifecycle.js && node --check src/project-tools.js && node --check public/app.js && node --check public/voice.js && node --check scripts/voice-browser-smoke.mjs && node --test"
   },
   "engines": {
     "node": ">=20"
