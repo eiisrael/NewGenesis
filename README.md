@@ -1,22 +1,287 @@
 # NewGenesis 2.3.1
 
-NewGenesis combina uma interface local, o contexto estrutural do SupremeMind e um orquestrador verificável que usa somente rotas gratuitas da OpenRouter. Conversas, tarefas, telemetria, memória canônica e preferências permanecem no computador.
+> **Autoria e direitos autorais:** © 2026 **Erick Israel**.  
+> Projeto distribuído sob a licença MIT. A autoria original e o aviso de copyright devem ser preservados conforme os termos do arquivo [`LICENSE`](LICENSE).
 
-O pedido `Analise o Astraeon e retorne um bash com as informações do projeto.` é um contrato especial de visão geral: usa o perfil local do projeto, não consulta o OpenRouter e registra zero requests/tokens remotos.
+NewGenesis é um **agente local genérico e verificável**, desenvolvido para combinar conversa, análise de projetos, execução de tarefas, memória, telemetria, contexto estrutural e recursos de voz em uma única interface local.
 
-## Início
+A arquitetura integra o **SupremeMind** para compreensão estrutural do projeto, um orquestrador agentic com limites explícitos e uma política **free-only** para uso remoto via OpenRouter. Conversas, tarefas, preferências, memória canônica e telemetria permanecem no computador.
 
-Requisito: Node.js 20 ou superior. A chave OpenRouter é opcional para recursos inteiramente locais e necessária para respostas remotas.
+## O que o NewGenesis faz
+
+O NewGenesis foi projetado para trabalhar como um agente que **analisa antes de agir, executa dentro de limites definidos e verifica o resultado**.
+
+Principais capacidades:
+
+- chat local com contexto contínuo;
+- análise e diagnóstico de projetos;
+- leitura, busca, edição e verificação de arquivos dentro da raiz autorizada;
+- execução controlada de verificações do projeto;
+- SupremeMind para índice estrutural, símbolos, dependências, contexto, impacto e grafo;
+- memória local e histórico de tarefas;
+- ledger de requests, tokens, ferramentas e resultados;
+- telemetria local;
+- área **Neural** para inspeção do runtime e do conhecimento estrutural;
+- entrada e saída por voz com fallback para texto;
+- roteamento somente por modelos gratuitos quando a OpenRouter é utilizada;
+- proteções de orçamento, timeout, rede, segredos e mutação.
+
+## Filosofia do projeto
+
+O NewGenesis segue alguns princípios importantes:
+
+1. **Local-first:** dados e estado do agente permanecem localmente sempre que possível.
+2. **Verificável:** uma alteração não deve ser considerada concluída sem evidência ou verificação apropriada.
+3. **Sem retry remoto oculto:** novas tentativas e fallbacks remotos entram no mesmo orçamento e aparecem no ledger.
+4. **Free-only:** o roteamento automático aceita apenas `openrouter/free` e modelos explicitamente marcados com `:free`.
+5. **Análise não é autorização de escrita:** pedidos de diagnóstico permanecem somente leitura até existir intenção real de alteração.
+6. **Segurança por padrão:** o servidor opera apenas em loopback e arquivos sensíveis não devem entrar no Git.
+7. **Fallback seguro:** ausência de APIs de voz, modelo remoto ou outros recursos opcionais não deve inutilizar o núcleo local.
+
+---
+
+# Requisitos
+
+## Obrigatórios
+
+| Componente | Requisito |
+| --- | --- |
+| Node.js | **20 ou superior** |
+| npm | incluído com o Node.js |
+| Navegador | Chrome, Chromium, Edge ou navegador moderno compatível |
+| Sistema | Windows, Linux ou ambiente compatível com Node.js |
+
+Para desenvolvimento, também é recomendado ter **Git** instalado.
+
+A chave da OpenRouter é **opcional para recursos inteiramente locais** e necessária apenas quando uma resposta ou tarefa precisa utilizar modelos remotos.
+
+## Verifique sua instalação
+
+No terminal:
+
+```powershell
+node -v
+npm -v
+git --version
+```
+
+O projeto declara suporte a:
+
+```text
+Node.js >= 20
+```
+
+---
+
+# Instalação
+
+Clone o repositório:
+
+```powershell
+git clone https://github.com/eiisrael/NewGenesis.git
+cd NewGenesis
+```
+
+O projeto raiz atualmente não depende de pacotes externos obrigatórios para o runtime principal, mas o comando padrão de preparação continua sendo:
+
+```powershell
+npm install
+```
+
+Depois inicie:
 
 ```powershell
 npm start
 ```
 
-No Windows, `start.bat` executa o mesmo comando. Abra `http://127.0.0.1:7331`. Copie `.env.example` para `.env.local` se preferir configurar a chave por arquivo; `.env*` reais são ignorados pelo Git.
+No Windows também é possível utilizar:
 
-## Tetos globais
+```text
+start.bat
+```
 
-Os defaults de `src/config.js` são limites máximos, não uma promessa de consumo:
+Abra no navegador:
+
+```text
+http://127.0.0.1:7331
+```
+
+A área Neural fica em:
+
+```text
+http://127.0.0.1:7331/neural/neural.html
+```
+
+---
+
+# Configuração da OpenRouter
+
+Para funções remotas, configure uma chave da OpenRouter.
+
+O projeto inclui:
+
+```text
+.env.example
+```
+
+Você pode copiá-lo para:
+
+```text
+.env.local
+```
+
+Os arquivos reais `.env*` são ignorados pelo Git para reduzir o risco de publicação acidental de credenciais.
+
+**Nunca publique uma chave real de API em commits, issues, logs ou documentação.**
+
+---
+
+# ASTRAEON e visão geral local
+
+O pedido:
+
+```text
+Analise o Astraeon e retorne um bash com as informações do projeto.
+```
+
+é tratado como um **contrato especial de visão geral local**.
+
+Nesse fluxo, o NewGenesis:
+
+- usa o perfil local do projeto;
+- consulta o contexto já disponível localmente;
+- não chama a OpenRouter;
+- registra **0 requests remotos**;
+- registra **0 tokens remotos**.
+
+Essa garantia é protegida por testes para impedir regressões.
+
+---
+
+# SupremeMind
+
+O **SupremeMind** é a camada estrutural local do NewGenesis.
+
+Ele pode:
+
+- inventariar arquivos de texto seguros;
+- extrair símbolos e dependências;
+- criar chunks de contexto;
+- calcular relações entre partes do projeto;
+- construir e consultar um grafo estrutural;
+- fornecer contexto relevante ao agente;
+- analisar impacto de alterações;
+- manter memórias estruturadas.
+
+Arquivos potencialmente sensíveis ou inadequados para indexação, como segredos, certificados, chaves, binários e outros formatos inseguros, são recusados pelas proteções do sistema.
+
+O SupremeMind possui também sua própria rotina de validação:
+
+```powershell
+cd SupremeMind
+npm run check
+```
+
+---
+
+# Área Neural
+
+A interface Neural funciona como um cockpit técnico do NewGenesis.
+
+Ela reúne informações como:
+
+- tarefas;
+- utilização;
+- contexto;
+- grafo;
+- impacto;
+- órbita;
+- memória;
+- estado do runtime;
+- diagnóstico estrutural.
+
+Endereço padrão:
+
+```text
+http://127.0.0.1:7331/neural/neural.html
+```
+
+---
+
+# Voz
+
+A voz funciona como uma camada progressiva sobre o mesmo composer e histórico do chat.
+
+O NewGenesis utiliza, quando disponíveis no navegador:
+
+- `SpeechRecognition` / implementação compatível;
+- `speechSynthesis`.
+
+Se essas APIs não estiverem disponíveis, **o chat textual continua funcionando normalmente** e os controles incompatíveis são desativados.
+
+## Privacidade da voz
+
+O NewGenesis não armazena o áudio capturado pelo microfone.
+
+O reconhecimento de fala é fornecido pelo navegador. Dependendo do navegador e da implementação utilizada, o reconhecimento pode envolver um serviço online do próprio fornecedor do navegador.
+
+As preferências da interface de voz ficam no armazenamento local do navegador.
+
+A política de permissões limita o microfone à própria origem do NewGenesis, e o CSS da voz foi movido para arquivos estáticos para permanecer compatível com uma CSP estrita.
+
+---
+
+# Ferramentas de projeto
+
+O agente possui ferramentas controladas para trabalhar dentro do projeto aberto.
+
+## Busca
+
+`search_project`:
+
+- aceita até **6 termos alternativos**;
+- retorna no máximo **18 ocorrências**;
+- contextualiza até **8 resultados**.
+
+## Leitura
+
+`read_project_file`:
+
+- retorna no máximo **220 linhas** por chamada;
+- limita a saída a **8.000 caracteres sanitizados**;
+- utiliza paginação explícita quando necessário.
+
+## Limites estruturais
+
+- arquivo individual analisável: até **2 MiB**;
+- inventário: até **10.000 arquivos**;
+- texto seguro inventariado: até **128 MiB**.
+
+## Escrita e mutação
+
+Operações de criação, substituição, edição e movimentação permanecem dentro da raiz real do projeto aberto.
+
+Exclusões só são disponibilizadas quando o pedido do usuário realmente autoriza exclusão.
+
+Pedidos de análise ou diagnóstico permanecem em modo somente leitura. A simples presença de palavras como `fix`, `delete` ou trechos de código não constitui, por si só, autorização de mutação.
+
+## Verificação automática
+
+`run_project_check=auto` procura uma rotina segura de validação e pode preferir um script `check` quando ele claramente agrega múltiplas verificações.
+
+A execução continua protegida por:
+
+- allowlist de comandos;
+- ambiente reduzido;
+- isolamento na raiz do projeto;
+- timeout de **120 segundos**;
+- saída sanitizada.
+
+---
+
+# Orçamento global
+
+Os valores definidos em `src/config.js` são **tetos**, e não uma promessa de consumo.
 
 | Limite | Default |
 | --- | ---: |
@@ -29,13 +294,26 @@ Os defaults de `src/config.js` são limites máximos, não uma promessa de consu
 | Mensagem do usuário | 120.000 caracteres |
 | Timeout de request | 60 s |
 
-Podem ser reduzidos com `GENESIS_MAX_ROUTES_PER_MESSAGE`, `GENESIS_MAX_REQUESTS_PER_MESSAGE`, `GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE`, `GENESIS_MAX_TOOL_ROUNDS`, `GENESIS_INPUT_TOKEN_BUDGET`, `GENESIS_OUTPUT_TOKEN_BUDGET`, `GENESIS_MAX_MESSAGE_CHARACTERS` e `GENESIS_REQUEST_TIMEOUT_MS`.
+Esses limites podem ser reduzidos por variáveis como:
 
-## Orçamento efetivo do contrato
+```text
+GENESIS_MAX_ROUTES_PER_MESSAGE
+GENESIS_MAX_REQUESTS_PER_MESSAGE
+GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE
+GENESIS_MAX_TOOL_ROUNDS
+GENESIS_INPUT_TOKEN_BUDGET
+GENESIS_OUTPUT_TOKEN_BUDGET
+GENESIS_MAX_MESSAGE_CHARACTERS
+GENESIS_REQUEST_TIMEOUT_MS
+```
 
-O menor valor entre a configuração global, a capacidade do modelo e o contrato da tarefa prevalece:
+---
 
-| Contrato | Requests | Entrada cumulativa | Entrada por request | Reserva final | Deadline |
+# Orçamento efetivo por contrato
+
+O menor valor entre configuração global, capacidade do modelo e contrato da tarefa prevalece.
+
+| Contrato | Requests | Entrada cumulativa | Entrada/request | Reserva final | Deadline |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Visão geral local | 0 | 0 | 0 | 0 | local |
 | Análise/diagnóstico | 3 | 30.000 | 14.000 | 1 | 90 s |
@@ -43,57 +321,238 @@ O menor valor entre a configuração global, a capacidade do modelo e o contrato
 | Mudança/correção comum | 6 | 72.000 | 14.000 | 1 | 180 s |
 | Mudança/correção ampla | 14 | 144.000 | 16.000 | 1 | 240 s |
 
-O contexto realmente enviado costuma ser menor: respeita o teto de 12.000 tokens do motor, a janela do modelo, a reserva de saída, o modo escolhido e o orçamento restante. Cada chamada é contabilizada antes de sair; não há retry remoto oculto. Fallbacks entre rotas gratuitas e continuações aparecem no ledger e consomem o mesmo orçamento.
+O contexto realmente enviado pode ser menor por causa da janela do modelo, reserva de saída, orçamento restante e limite interno do motor.
 
-## Ferramentas de projeto
+Cada chamada remota é contabilizada antes de sair. Fallbacks e continuações remotas também consomem orçamento e ficam visíveis no ledger.
 
-- `search_project` aceita até 6 termos alternativos, retorna no máximo 18 ocorrências e contextualiza até 8.
-- `read_project_file` retorna no máximo 220 linhas e 8.000 caracteres sanitizados por chamada, com paginação explícita.
-- Arquivos individuais analisáveis têm até 2 MiB; o inventário aceita até 10.000 arquivos e 128 MiB de texto seguro.
-- Escrita, substituição, criação e movimentação permanecem dentro da raiz real do projeto aberto.
-- Exclusão só é oferecida quando o pedido a autoriza explicitamente.
-- `run_project_check=auto` prefere um script `check` quando ele agrega claramente múltiplas verificações; comandos continuam em allowlist, com ambiente reduzido, timeout de 120 s e saída sanitizada.
+---
 
-## Análise, mutação e verificação
+# Contabilidade e resultado verificável
 
-Pedidos de análise/diagnóstico são somente leitura. Uma frase que apenas menciona “delete”, “fix” ou código mutável não autoriza escrita. Mudanças exigem uma ferramenta real, respeitam o modo de aprovação (`ask` ou `full`), produzem evidências e reservam verificação/síntese quando o orçamento permite. Streaming parcial, EOF sem término, timeout, STOP e `finish_reason=error/length` nunca viram sucesso verificado.
+O NewGenesis diferencia execução de sucesso real.
 
-## Free-only e contabilidade
+Não são transformados artificialmente em “sucesso verificado” casos como:
 
-O catálogo aceita apenas `openrouter/free` e IDs explicitamente `:free`; nenhum modelo pago é escolhido automaticamente. Requests e tokens reportados pelo provedor continuam contabilizados em sucesso, erro, timeout e STOP. Estimativas são identificadas e editar uma mensagem não apaga consumo anterior.
+- streaming incompleto;
+- EOF sem término válido;
+- timeout;
+- STOP;
+- `finish_reason=error`;
+- `finish_reason=length`.
 
-## SupremeMind e Neural
+Requests e tokens reportados continuam sendo contabilizados mesmo quando uma operação termina com erro, timeout ou interrupção.
 
-O SupremeMind funciona localmente: inventaria texto seguro, extrai símbolos/dependências, cria chunks, calcula relações e mantém memórias estruturadas. Segredos, certificados, chaves, binários e índices inseguros são recusados. O overview ASTRAEON não faz chamada remota.
+Editar uma mensagem não apaga consumo já realizado.
 
-A área Neural fica em `http://127.0.0.1:7331/neural/neural.html` e expõe tarefas, uso, grafo, contexto, impacto, órbita, memória e diagnóstico do runtime.
+---
 
-## Voz e privacidade
+# Telemetria e shutdown
 
-A voz é uma camada progressiva sobre o mesmo composer e histórico do chat. O microfone é permitido pela `Permissions-Policy` somente para a própria origem; CSS e scripts obedecem à CSP `style-src 'self'; script-src 'self'`. Sem `SpeechRecognition` ou `speechSynthesis`, o composer textual permanece funcional e os controles incompatíveis são desativados.
+A 2.3.1 adicionou um ciclo de desligamento determinístico para corrigir a race de `events.jsonl` observada especialmente no Windows.
 
-O áudio não é armazenado pelo NewGenesis. O reconhecimento é fornecido pelo navegador e, dependendo dele, pode usar um serviço online do próprio fornecedor. Preferências de voz ficam no armazenamento local do navegador.
+Ao encerrar, o runtime pode:
 
-## Segurança e rede
+1. parar de aceitar novas requisições;
+2. cancelar operações ativas;
+3. encerrar conexões SSE;
+4. aguardar o fechamento HTTP;
+5. drenar stores e filas de telemetria;
+6. concluir a saída de maneira controlada.
 
-- O servidor aceita bind somente em `127.0.0.0/8`, `::1` ou `localhost`.
-- `0.0.0.0`, IP de LAN e hostname externo são recusados; não existe modo remoto seguro suportado nesta versão.
-- `Host` e `Origin` externos são rejeitados. `x-genesis-client: web` é uma barreira anti-CSRF da UI, não autenticação.
-- Chaves persistidas ficam no cofre local criptografado e nunca retornam à UI.
-- O shutdown de `SIGINT`/`SIGTERM` para novas requisições, cancela operações ativas, espera o HTTP fechar e drena stores/telemetria.
+A fila de telemetria também foi endurecida para não produzir `unhandledRejection` quando uma escrita falha; a falha continua podendo ser observada deterministicamente pelo fluxo de `flush()`.
 
-Consulte `SECURITY.md` para comunicar vulnerabilidades.
+---
 
-## Verificação
+# Segurança de rede
+
+Por padrão, o NewGenesis foi feito para uso **local**.
+
+O servidor aceita bind apenas em:
+
+```text
+127.0.0.0/8
+::1
+localhost
+```
+
+São recusados, nesta versão:
+
+- `0.0.0.0`;
+- IP de LAN;
+- hostname externo;
+- exposição remota direta.
+
+Também existem validações de `Host` e `Origin` para impedir acesso por origens externas inesperadas.
+
+O header:
+
+```text
+x-genesis-client: web
+```
+
+é uma barreira da interface contra determinados fluxos indevidos, **não um mecanismo de autenticação**.
+
+O NewGenesis 2.3.1 não declara suporte a exposição remota segura. Não publique a porta `7331` diretamente na Internet.
+
+Consulte [`SECURITY.md`](SECURITY.md) para orientações de segurança e comunicação responsável de vulnerabilidades.
+
+---
+
+# O que mudou na 2.3.1
+
+A 2.3.1 é uma patch de estabilização da linha 2.3.
+
+Entre as principais correções e melhorias estão:
+
+- correção determinística da race de telemetria/`events.jsonl` no Windows;
+- lifecycle reutilizável e shutdown seguro;
+- drenagem de filas de telemetria antes da saída;
+- correção de `unhandledRejection` em falhas de escrita de telemetria;
+- CSS da voz compatível com CSP estrita;
+- microfone limitado à própria origem;
+- fallback textual validado quando APIs de voz não existem;
+- proteção de `.env`, `.env.local` e outros `.env*`;
+- `.env.example` seguro;
+- bind restrito a loopback;
+- validação de `Host` e `Origin`;
+- versão canônica derivada de `package.json`;
+- remoção de cache keys antigas divergentes de versão;
+- melhoria da heurística de `run_project_check=auto`;
+- manutenção da allowlist de comandos e remoção de execução insegura por shell no Windows;
+- testes de regressão para Windows, telemetria, shutdown, CSP, rede, versão e ferramentas;
+- smoke test real de voz em Chrome/Chromium;
+- CI modernizado para Node 20/22/24, Linux e Windows;
+- validação explícita do SupremeMind;
+- documentação, changelog, política de segurança, licença e checklist de release sincronizados.
+
+A estabilização preserva as garantias anteriores: **free-only, ausência de retry remoto oculto, orçamento explícito, separação entre análise e mutação, ledger, redaction de segredos e overview ASTRAEON sem OpenRouter**.
+
+---
+
+# Testes
+
+## Testes principais
 
 ```powershell
 npm test
+```
+
+## Verificação completa
+
+```powershell
 npm run check
+```
+
+## Smoke de navegador e voz
+
+```powershell
 npm run test:browser
+```
+
+O smoke de navegador requer Chrome, Chromium ou Edge. Também é possível apontar explicitamente o executável com `CHROME_PATH`.
+
+## SupremeMind
+
+```powershell
 cd SupremeMind
 npm run check
 ```
 
-`test:browser` requer Chrome, Chromium ou Edge (ou `CHROME_PATH`) e usa o navegador real sem dependências adicionais. O CI cobre Node 20/22/24 no Linux, Node 22 no Windows, o smoke de voz no Chrome e a verificação própria do SupremeMind.
+Na preparação da 2.3.1, a validação registrada no PR de estabilização alcançou:
 
-Veja `CHANGELOG.md`, `RELEASE_NOTES_2.3.1.md` e `RELEASE_CHECKLIST.md` para a preparação da release. `EVOLUCAO_GENESIS_2_1.txt` foi preservado apenas como documento histórico da linha 2.1.
+```text
+npm test            158/158 testes aprovados
+npm run check       158/158 testes aprovados + syntax checks
+SupremeMind check   4/4 testes aprovados + syntax + npm pack --dry-run
+```
+
+Sem testes ignorados para esconder regressões.
+
+---
+
+# CI
+
+A matriz de CI da 2.3.1 cobre:
+
+| Ambiente | Validação |
+| --- | --- |
+| Ubuntu + Node 20 | projeto principal |
+| Ubuntu + Node 22 | projeto principal |
+| Ubuntu + Node 24 | projeto principal |
+| Windows + Node 22 | projeto principal |
+| Chrome/Chromium | smoke real de navegador/voz |
+| SupremeMind | check próprio e empacotamento seco |
+
+Os workflows usam Actions atualizadas para runtimes internos modernos e possuem timeouts definidos.
+
+---
+
+# Estrutura resumida
+
+```text
+NewGenesis/
+├── public/                  Interface principal
+├── scripts/                 Rotinas auxiliares e smoke de navegador
+├── src/                     Runtime e backend do NewGenesis
+│   ├── core/                Orquestração e núcleo agentic
+│   ├── config.js            Configuração e limites
+│   ├── project-tools.js     Ferramentas de projeto
+│   ├── runtime-lifecycle.js Lifecycle e shutdown
+│   ├── server.js            Servidor HTTP local
+│   └── telemetry.js         Telemetria local
+├── SupremeMind/             Motor estrutural local
+├── test/                    Testes automatizados
+├── .env.example             Exemplo seguro de configuração
+├── CHANGELOG.md             Histórico de mudanças
+├── SECURITY.md              Política de segurança
+├── RELEASE_CHECKLIST.md     Checklist de release
+├── RELEASE_NOTES_2.3.1.md   Notas da 2.3.1
+├── LICENSE                  Licença MIT e copyright
+└── README.md                Este documento
+```
+
+A decomposição ampla de módulos grandes, como `server.js`, orchestrator e integrações extensas, permanece uma melhoria arquitetural futura. A estabilização 2.3.1 priorizou correções comprovadas sem misturar um grande refactor estrutural.
+
+---
+
+# Documentação adicional
+
+Consulte também:
+
+- [`CHANGELOG.md`](CHANGELOG.md) — mudanças por versão;
+- [`RELEASE_NOTES_2.3.1.md`](RELEASE_NOTES_2.3.1.md) — detalhes da patch 2.3.1;
+- [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — etapas para publicação;
+- [`SECURITY.md`](SECURITY.md) — segurança e reporte responsável;
+- [`SupremeMind/README.md`](SupremeMind/README.md) — documentação do SupremeMind;
+- `RELATORIO_TECNICO.txt` — relatório técnico do estado atual;
+- `EVOLUCAO_GENESIS_2_1.txt` — documento histórico da linha 2.1.
+
+---
+
+# Autoria, copyright e licença
+
+**Autor e mantenedor original:** **Erick Israel**  
+**Copyright:** © 2026 Erick Israel. Todos os direitos autorais sobre a obra original são atribuídos ao seu autor nos termos aplicáveis.
+
+O código deste repositório é disponibilizado sob a **MIT License**, conforme o arquivo [`LICENSE`](LICENSE).
+
+A licença MIT permite uso, cópia, modificação, distribuição, sublicenciamento e comercialização do software, desde que o **aviso de copyright e o texto de permissão da licença sejam mantidos nas cópias ou partes substanciais do software**.
+
+A disponibilização sob MIT **não remove a autoria original de Erick Israel** nem autoriza a remoção do aviso de copyright exigido pela própria licença.
+
+Ao redistribuir ou utilizar partes substanciais deste projeto, preserve:
+
+```text
+Copyright (c) 2026 Erick Israel
+```
+
+e o texto da licença MIT correspondente.
+
+---
+
+## NewGenesis
+
+Criado e mantido por **Erick Israel**.
+
+© 2026 Erick Israel — NewGenesis.  
+Licenciado sob MIT; consulte [`LICENSE`](LICENSE).
