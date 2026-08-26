@@ -21,6 +21,7 @@ import { SupremeMindIntegration } from './suprememind-integration.js';
 import { createTaskContract } from './core/task-contract.js';
 import { TaskLedgerStore } from './core/task-ledger.js';
 import { createRuntimeShutdown } from './runtime-lifecycle.js';
+import { VoiceRuntime } from './voice/voice-runtime.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CHAT_BODY_BYTES = 24 * 1024 * 1024;
@@ -84,6 +85,27 @@ async function readJson(request, maxBytes = MAX_BODY_BYTES) {
     error.status = 400;
     throw error;
   }
+}
+
+async function readBuffer(request, { contentType, maxBytes }) {
+  const type = String(request.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
+  if (type !== contentType) {
+    const error = new Error(`Content-Type deve ser ${contentType}.`);
+    error.status = 415;
+    throw error;
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      const error = new Error('Corpo da requisição excede o limite permitido.');
+      error.status = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 function assertTrustedMutation(request) {
@@ -514,7 +536,7 @@ async function serveStatic(response, staticRoot, pathname) {
   }
 }
 
-export function createHandler({ config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger, onShutdown = null }) {
+export function createHandler({ config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger, voiceRuntime = null, onShutdown = null }) {
   const activeConversations = new Set();
   const activeControllers = new Set();
   const activeStreams = new Set();
@@ -547,6 +569,45 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
 
       if (url.pathname === '/api/health' && request.method === 'GET') {
         return sendJson(response, 200, { ok: true, name: 'Genesis New', version: config.version || GENESIS_VERSION, freeOnly: true });
+      }
+
+      if (url.pathname === '/api/voice/status' && request.method === 'GET') {
+        return sendJson(response, 200, voiceRuntime ? await voiceRuntime.refreshStatus() : {
+          available: false, localOnly: true, storesRawAudio: false,
+          stt: { whisper: { available: false, profiles: {} } },
+          tts: { chatterbox: { available: false }, piper: { available: false } }
+        });
+      }
+
+      if (url.pathname === '/api/voice/metrics' && request.method === 'POST') {
+        assertTrustedMutation(request);
+        const body = await readJson(request, 8 * 1024);
+        return sendJson(response, 202, voiceRuntime?.recordMetric?.(body) || { ok: true });
+      }
+
+      if (url.pathname === '/api/voice/transcribe' && request.method === 'POST') {
+        assertTrustedMutation(request);
+        if (!voiceRuntime) return sendJson(response, 503, { error: { code: 'voice_runtime_unavailable', message: 'Runtime de voz local indisponível.' } });
+        const audio = await readBuffer(request, { contentType: 'audio/wav', maxBytes: 10 * 1024 * 1024 });
+        const result = await voiceRuntime.transcribe(audio, { quality: url.searchParams.get('quality') || 'balanced' });
+        return sendJson(response, 200, result);
+      }
+
+      if (url.pathname === '/api/voice/synthesize' && request.method === 'POST') {
+        assertTrustedMutation(request);
+        if (!voiceRuntime) return sendJson(response, 503, { error: { code: 'voice_runtime_unavailable', message: 'Runtime de voz local indisponível.' } });
+        const body = await readJson(request, 12 * 1024);
+        const result = await voiceRuntime.synthesize(body);
+        setSecurityHeaders(response);
+        response.writeHead(200, {
+          'content-type': 'audio/wav',
+          'content-length': result.audio.length,
+          'cache-control': 'no-store',
+          'x-genesis-voice-engine': result.engine,
+          'x-genesis-voice-latency-ms': String(result.latencyMs)
+        });
+        response.end(result.audio);
+        return;
       }
 
       if (url.pathname === '/api/runtime/shutdown' && request.method === 'POST') {
@@ -1465,6 +1526,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
       response.end();
     }
     for (const conversationId of activeConversations) approvalManager.cancelConversation(conversationId);
+    voiceRuntime?.beginShutdown?.();
   };
   handler.runtimeState = () => ({ shuttingDown, activeRequests: activeControllers.size, activeStreams: activeStreams.size });
   return handler;
@@ -1474,6 +1536,7 @@ export async function startServer(root = process.cwd()) {
   const config = createConfig(root);
   const store = await new GenesisStore(config.dataDir).init();
   const telemetry = await new GenesisTelemetry(config.dataDir).init();
+  const voiceRuntime = await new VoiceRuntime({ root: config.root, dataDir: config.dataDir, telemetry }).init();
   const attachmentStore = await new AttachmentStore(config.dataDir).init();
   const projectStore = await new ProjectStore(config.dataDir).init();
   const permissionStore = await new PermissionStore(config.dataDir).init();
@@ -1507,14 +1570,14 @@ export async function startServer(root = process.cwd()) {
   let shutdown;
   const handler = createHandler({
     config, store, orchestrator, telemetry, settings, attachmentStore, projectStore,
-    permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger,
+    permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger, voiceRuntime,
     onShutdown: () => shutdown()
   });
   const server = http.createServer(handler);
   shutdown = createRuntimeShutdown({
     server,
     handler,
-    persistences: [store, projectStore, permissionStore, taskLedger, userMemory],
+    persistences: [store, projectStore, permissionStore, taskLedger, userMemory, voiceRuntime],
     telemetry
   });
   await new Promise((resolve, reject) => server.once('error', reject).listen(config.port, config.host, resolve));
@@ -1524,7 +1587,7 @@ export async function startServer(root = process.cwd()) {
   });
   console.log(`[Genesis] Painel ativo em http://${config.host}:${config.port}`);
   console.log('[Genesis] Política: somente modelos gratuitos; APIs pagas desativadas.');
-  const runtime = { server, config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, taskLedger };
+  const runtime = { server, config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, taskLedger, voiceRuntime };
   runtime.shutdown = shutdown;
   return runtime;
 }

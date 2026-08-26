@@ -4,9 +4,10 @@ import fs from 'node:fs';
 
 test('UI de voz usa o mesmo composer e histórico canônico do chat', () => {
   const source = fs.readFileSync(new URL('../public/voice.js', import.meta.url), 'utf8');
-  assert.match(source, /SpeechRecognition/);
-  assert.match(source, /webkitSpeechRecognition/);
-  assert.match(source, /speechSynthesis/);
+  const engines = fs.readFileSync(new URL('../public/voice/engines.js', import.meta.url), 'utf8');
+  assert.match(engines, /SpeechRecognition/);
+  assert.match(engines, /webkitSpeechRecognition/);
+  assert.match(engines, /speechSynthesis/);
   assert.match(source, /composer\.requestSubmit\(\)/);
   assert.match(source, /aria-busy/);
   assert.match(source, /#messageList/);
@@ -30,4 +31,13 @@ test('voz respeita a CSP estrita e usa somente CSS estático same-origin', () =>
   assert.match(server, /style-src 'self'/);
   assert.doesNotMatch(server, /style-src[^\n]*unsafe-inline/);
   assert.match(server, /microphone=\(self\)/);
+});
+
+test('modo conversa expõe controles, privacidade local e engines opcionais', () => {
+  const voice = fs.readFileSync(new URL('../public/voice.js', import.meta.url), 'utf8');
+  assert.match(voice, /voiceConversationMode/);
+  assert.match(voice, /voicePreferLocal/);
+  assert.match(voice, /Chatterbox pt-BR/);
+  assert.match(voice, /Piper pt-BR/);
+  assert.match(voice, /Áudio local não é salvo/);
 });
