@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createConfig } from './config.js';
+import { createConfig, GENESIS_VERSION, isLoopbackHost } from './config.js';
 import { GenesisStore } from './storage.js';
 import { ContextEngine, estimateMessageTokens } from './core/context-engine.js';
 import { GenesisOrchestrator } from './core/orchestrator.js';
@@ -20,8 +20,8 @@ import { UserMemoryStore } from './user-memory.js';
 import { SupremeMindIntegration } from './suprememind-integration.js';
 import { createTaskContract } from './core/task-contract.js';
 import { TaskLedgerStore } from './core/task-ledger.js';
+import { createRuntimeShutdown } from './runtime-lifecycle.js';
 
-const VERSION = '2.1.0';
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CHAT_BODY_BYTES = 24 * 1024 * 1024;
 const MAX_PROJECT_BODY_BYTES = 140 * 1024 * 1024;
@@ -40,7 +40,7 @@ const securityHeaders = {
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
-  'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=()'
+  'permissions-policy': 'camera=(), microphone=(self), geolocation=(), payment=()'
 };
 
 function setSecurityHeaders(response) {
@@ -87,9 +87,40 @@ async function readJson(request, maxBytes = MAX_BODY_BYTES) {
 }
 
 function assertTrustedMutation(request) {
+  // Cabeçalho anti-CSRF emitido somente pela UI. Não é autenticação e nunca
+  // autoriza exposição remota do servidor.
   if (request.headers['x-genesis-client'] !== 'web') {
     const error = new Error('Origem da requisição não autorizada.');
     error.status = 403;
+    throw error;
+  }
+}
+
+function assertLocalRequest(request) {
+  const hostHeader = String(request.headers.host || '').trim();
+  let target;
+  try { target = new URL(`http://${hostHeader}`); }
+  catch { target = null; }
+  if (!target || !isLoopbackHost(target.hostname)) {
+    const error = new Error('Host local não autorizado.');
+    error.status = 403;
+    error.code = 'untrusted_local_host';
+    throw error;
+  }
+
+  const originHeader = String(request.headers.origin || '').trim();
+  if (!originHeader) return;
+  let origin;
+  try { origin = new URL(originHeader); }
+  catch { origin = null; }
+  const sameTarget = origin
+    && isLoopbackHost(origin.hostname)
+    && origin.hostname.toLowerCase() === target.hostname.toLowerCase()
+    && origin.port === target.port;
+  if (!sameTarget) {
+    const error = new Error('Origin local não autorizada.');
+    error.status = 403;
+    error.code = 'untrusted_local_origin';
     throw error;
   }
 }
@@ -483,11 +514,14 @@ async function serveStatic(response, staticRoot, pathname) {
   }
 }
 
-export function createHandler({ config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger }) {
+export function createHandler({ config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger, onShutdown = null }) {
   const activeConversations = new Set();
+  const activeControllers = new Set();
+  const activeStreams = new Set();
   const allowRequest = createRateLimiter();
   const allowChatRequest = createRateLimiter();
   const staticRoot = path.join(config.root, 'public');
+  let shuttingDown = false;
   
   // Cache de instâncias SupremeMindIntegration por projeto
   const supremeMindCache = new Map(); // projectRoot -> SupremeMindIntegration
@@ -502,15 +536,28 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
     return instance;
   }
 
-  return async function handler(request, response) {
+  const handler = async function handler(request, response) {
     try {
+      if (shuttingDown) return sendJson(response, 503, { error: { code: 'server_shutting_down', message: 'O Genesis está encerrando com segurança.' } });
+      assertLocalRequest(request);
       if (!allowRequest(request)) return sendJson(response, 429, { error: { code: 'local_rate_limit', message: 'Muitas requisições locais. Aguarde um minuto.' } });
       const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
       const segments = url.pathname.split('/').filter(Boolean);
       const openRouter = orchestrator.provider('openrouter');
 
       if (url.pathname === '/api/health' && request.method === 'GET') {
-        return sendJson(response, 200, { ok: true, name: 'Genesis New', version: VERSION, freeOnly: true });
+        return sendJson(response, 200, { ok: true, name: 'Genesis New', version: config.version || GENESIS_VERSION, freeOnly: true });
+      }
+
+      if (url.pathname === '/api/runtime/shutdown' && request.method === 'POST') {
+        assertTrustedMutation(request);
+        if (typeof onShutdown !== 'function') return sendJson(response, 503, { error: { code: 'shutdown_unavailable', message: 'Shutdown controlado indisponível neste runtime.' } });
+        sendJson(response, 202, { ok: true, status: 'shutting_down' });
+        setImmediate(() => Promise.resolve(onShutdown()).catch(error => {
+          console.error(`[Genesis] Falha no shutdown solicitado localmente: ${error?.stack || error}`);
+          process.exitCode = 1;
+        }));
+        return;
       }
 
       if (url.pathname === '/api/bootstrap' && request.method === 'GET') {
@@ -529,7 +576,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
         // refresh a conta antes do snapshot inicial — a UI passa a ver quota real
         refreshAccountInfo(openRouter, settings);
         return sendJson(response, 200, {
-          app: { name: 'Genesis New', version: VERSION },
+          app: { name: 'Genesis New', version: config.version || GENESIS_VERSION },
           policy: FREE_POLICY,
           modes: Object.values(MODES),
           providers: orchestrator.statuses(),
@@ -558,12 +605,14 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
 
       if (url.pathname === '/api/logs/stream' && request.method === 'GET') {
         sseStart(response);
+        activeStreams.add(response);
         sseSend(response, 'snapshot', { logs: telemetry.list({ limit: 300 }) });
         const unsubscribe = telemetry.subscribe(event => sseSend(response, 'log', event));
         const heartbeat = setInterval(() => {
           if (!response.destroyed && !response.writableEnded) response.write(': heartbeat\n\n');
         }, 15000);
         response.on('close', () => {
+          activeStreams.delete(response);
           clearInterval(heartbeat);
           unsubscribe();
         });
@@ -611,7 +660,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
         }
         return sendJson(response, 200, {
           generatedAt: new Date().toISOString(),
-          app: { name: 'Genesis New', version: VERSION },
+          app: { name: 'Genesis New', version: config.version || GENESIS_VERSION },
           project,
           intelligence: projectStore.intelligence(),
           supremeMind: supremeMindState,
@@ -660,6 +709,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
       if (url.pathname === '/api/project/pick' && request.method === 'POST') {
         assertTrustedMutation(request);
         const pickerController = new AbortController();
+        activeControllers.add(pickerController);
         const cancelPicker = () => pickerController.abort();
         request.once('aborted', cancelPicker);
         response.once('close', cancelPicker);
@@ -672,6 +722,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
         } finally {
           request.off('aborted', cancelPicker);
           response.off('close', cancelPicker);
+          activeControllers.delete(pickerController);
         }
         if (!selectedPath) return sendJson(response, 200, { cancelled: true, project: projectStore.summary() });
         const project = await projectStore.openPath(selectedPath);
@@ -1055,6 +1106,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
           const currentContextWindow = Number(lastAssistant?.meta?.context?.contextWindow || 0);
           activeConversations.add(id);
           const controller = new AbortController();
+          activeControllers.add(controller);
           const stopOnDisconnect = () => controller.abort();
           request.once('aborted', stopOnDisconnect);
           try {
@@ -1071,6 +1123,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
             return sendJson(response, 200, { handoff, openrouter: openRouterSnapshot(settings, openRouter) });
           } finally {
             request.off('aborted', stopOnDisconnect);
+            activeControllers.delete(controller);
             activeConversations.delete(id);
           }
         }
@@ -1138,6 +1191,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
 
           activeConversations.add(id);
           const generationController = new AbortController();
+          activeControllers.add(generationController);
           const stopOnDisconnect = () => generationController.abort();
           request.once('aborted', stopOnDisconnect);
           response.once('close', stopOnDisconnect);
@@ -1187,6 +1241,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
             if (!messagePersisted && attachments.length) await attachmentStore.removeMany(id, attachments.map(item => item.id));
             request.off('aborted', stopOnDisconnect);
             response.off('close', stopOnDisconnect);
+            activeControllers.delete(generationController);
             activeConversations.delete(id);
             throw error;
           }
@@ -1380,6 +1435,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
           } finally {
             request.off('aborted', stopOnDisconnect);
             response.off('close', stopOnDisconnect);
+            activeControllers.delete(generationController);
             activeConversations.delete(id);
             approvalManager.cancelConversation(id);
             if (!response.destroyed && !response.writableEnded) response.end();
@@ -1400,6 +1456,18 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
       sendJson(response, error.status || 500, { error: { code: error.code || 'server_error', message: error.status ? error.message : 'Falha interna do Genesis.' } });
     }
   };
+  handler.beginShutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    for (const controller of activeControllers) controller.abort();
+    for (const response of activeStreams) {
+      sseSend(response, 'shutdown', { ok: true });
+      response.end();
+    }
+    for (const conversationId of activeConversations) approvalManager.cancelConversation(conversationId);
+  };
+  handler.runtimeState = () => ({ shuttingDown, activeRequests: activeControllers.size, activeStreams: activeStreams.size });
+  return handler;
 }
 
 export async function startServer(root = process.cwd()) {
@@ -1436,10 +1504,19 @@ export async function startServer(root = process.cwd()) {
     maxToolRequests: config.maxToolRequestsPerMessage,
     maxToolRounds: config.maxToolRounds
   });
-  const server = http.createServer(createHandler({
+  let shutdown;
+  const handler = createHandler({
     config, store, orchestrator, telemetry, settings, attachmentStore, projectStore,
-    permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger
-  }));
+    permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger,
+    onShutdown: () => shutdown()
+  });
+  const server = http.createServer(handler);
+  shutdown = createRuntimeShutdown({
+    server,
+    handler,
+    persistences: [store, projectStore, permissionStore, taskLedger, userMemory],
+    telemetry
+  });
   await new Promise((resolve, reject) => server.once('error', reject).listen(config.port, config.host, resolve));
   telemetry.emit({
     category: 'system', type: 'system.ready', title: 'Genesis Core online',
@@ -1447,11 +1524,26 @@ export async function startServer(root = process.cwd()) {
   });
   console.log(`[Genesis] Painel ativo em http://${config.host}:${config.port}`);
   console.log('[Genesis] Política: somente modelos gratuitos; APIs pagas desativadas.');
-  return { server, config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, taskLedger };
+  const runtime = { server, config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, taskLedger };
+  runtime.shutdown = shutdown;
+  return runtime;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) startServer().catch(error => {
-  console.error(`[Genesis] ${error?.stack || error}`);
-  process.exitCode = 1;
-});
+if (isMain) {
+  startServer().then(runtime => {
+    const stop = signal => {
+      process.off('SIGINT', stop);
+      process.off('SIGTERM', stop);
+      runtime.shutdown().catch(error => {
+        console.error(`[Genesis] Falha no encerramento após ${signal}: ${error?.stack || error}`);
+        process.exitCode = 1;
+      });
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  }).catch(error => {
+    console.error(`[Genesis] ${error?.stack || error}`);
+    process.exitCode = 1;
+  });
+}

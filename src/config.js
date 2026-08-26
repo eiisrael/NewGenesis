@@ -2,6 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { assertFreeOpenRouterModels } from './core/policy.js';
 
+const packageMetadata = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+export const GENESIS_VERSION = String(packageMetadata.version);
+
+export function isLoopbackHost(value) {
+  const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
 function loadLocalEnv(root = process.cwd()) {
   for (const filename of ['.env.local', '.env']) {
     const target = path.join(root, filename);
@@ -32,11 +40,17 @@ export function createConfig(root = process.cwd()) {
   loadLocalEnv(root);
   const openRouterModels = String(process.env.OPENROUTER_FREE_MODELS || 'openrouter/free').split(',').map(item => item.trim()).filter(Boolean);
   assertFreeOpenRouterModels(openRouterModels);
+  const host = String(process.env.GENESIS_HOST || '127.0.0.1').trim();
+  if (!isLoopbackHost(host)) {
+    const error = new Error('GENESIS_HOST deve permanecer em loopback (127.0.0.1, ::1 ou localhost). Acesso remoto seguro ainda não é suportado.');
+    error.code = 'unsafe_remote_bind';
+    throw error;
+  }
 
   return {
-    version: '2.3.0',
+    version: GENESIS_VERSION,
     root,
-    host: process.env.GENESIS_HOST || '127.0.0.1',
+    host,
     port: toInt(process.env.GENESIS_PORT, 7331, 1, 65535),
     dataDir: path.resolve(root, process.env.GENESIS_DATA_DIR || '.genesis'),
     requestTimeoutMs: toInt(process.env.GENESIS_REQUEST_TIMEOUT_MS, 60000, 5000, 300000),

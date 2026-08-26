@@ -72,6 +72,7 @@ export class GenesisTelemetry {
     this.sequence = 0;
     this.subscribers = new Set();
     this.writeQueue = Promise.resolve();
+    this.writeError = null;
     // Timing metrics
     this.timers = new Map();
     this.timerSequence = 0;
@@ -143,7 +144,13 @@ export class GenesisTelemetry {
     this.sequence = event.sequence;
     this.events.push(event);
     if (this.events.length > this.capacity) this.events.splice(0, this.events.length - this.capacity);
-    this.writeQueue = this.writeQueue.catch(() => {}).then(() => fs.appendFile(this.file, `${JSON.stringify(event)}\n`, { mode: 0o600 }));
+    this.writeQueue = this.writeQueue
+      .then(() => fs.appendFile(this.file, `${JSON.stringify(event)}\n`, { mode: 0o600 }))
+      .catch(error => {
+        // A fila nunca permanece rejeitada sem consumidor. O primeiro erro ainda
+        // é entregue de forma determinística a quem executar flush().
+        this.writeError ||= error;
+      });
     for (const subscriber of this.subscribers) {
       try { subscriber(structuredClone(event)); } catch { /* subscriber isolation */ }
     }
@@ -247,7 +254,7 @@ export class GenesisTelemetry {
   }
 
   async clear() {
-    await this.writeQueue.catch(() => {});
+    await this.flush();
     this.events = [];
     this.metrics = freshMetrics();
     await fs.rm(this.previousFile, { force: true });
@@ -256,5 +263,10 @@ export class GenesisTelemetry {
 
   async flush() {
     await this.writeQueue;
+    if (this.writeError) {
+      const error = this.writeError;
+      this.writeError = null;
+      throw error;
+    }
   }
 }

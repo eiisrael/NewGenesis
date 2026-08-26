@@ -17,6 +17,7 @@ import { createTaskContract } from '../src/core/task-contract.js';
 import { ContextEngine } from '../src/core/context-engine.js';
 import { GenesisOrchestrator } from '../src/core/orchestrator.js';
 import { SupremeMindIntegration } from '../src/suprememind-integration.js';
+import { createRuntimeShutdown } from '../src/runtime-lifecycle.js';
 
 const ASTRAEON_PROMPT = 'Analise o Astraeon e retorne um bash com as informações do projeto.';
 
@@ -385,15 +386,14 @@ test('chat encerra falhas com relatório final honesto sem persistir conteúdo p
   });
   const server = http.createServer(handler);
   const baseUrl = await listen(server);
+  const shutdown = createRuntimeShutdown({
+    server,
+    handler,
+    persistences: [store, projectStore, permissionStore, taskLedger],
+    telemetry
+  });
   t.after(async () => {
-    await new Promise(resolve => server.close(resolve));
-    await Promise.allSettled([
-      store.writeQueue,
-      telemetry.writeQueue,
-      projectStore.writeQueue,
-      permissionStore.writeQueue,
-      taskLedger.writeQueue
-    ]);
+    await shutdown();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
@@ -507,8 +507,14 @@ test('chat ASTRAEON integra perfil local, ledger, storage e Neural sem chamar Op
   });
   const server = http.createServer(handler);
   const baseUrl = await listen(server);
+  const shutdown = createRuntimeShutdown({
+    server,
+    handler,
+    persistences: [store, projectStore, permissionStore, taskLedger],
+    telemetry
+  });
   t.after(async () => {
-    await new Promise(resolve => server.close(resolve));
+    await shutdown();
     await fs.rm(root, { recursive: true, force: true });
   });
 

@@ -44,3 +44,24 @@ test('limita a retenção em memória aos eventos mais recentes', async t => {
   await telemetry.flush();
   assert.deepEqual(telemetry.list().map(event => event.title), ['Evento 3', 'Evento 4', 'Evento 5']);
 });
+
+test('flush drena a fila e erros de persistência nunca viram unhandledRejection', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-telemetry-flush-'));
+  const telemetry = await new GenesisTelemetry(directory).init();
+  for (let index = 0; index < 50; index += 1) {
+    telemetry.emit({ category: 'test', type: 'flush.regression', title: `Evento ${index}` });
+  }
+  await telemetry.flush();
+  const persisted = (await fs.readFile(path.join(directory, 'events.jsonl'), 'utf8')).trim().split(/\r?\n/);
+  assert.equal(persisted.length, 50);
+
+  await fs.rm(directory, { recursive: true, force: true });
+  let unhandled = null;
+  const capture = error => { unhandled = error; };
+  process.once('unhandledRejection', capture);
+  t.after(() => process.off('unhandledRejection', capture));
+  telemetry.emit({ category: 'test', type: 'flush.failure', title: 'Diretório removido' });
+  await assert.rejects(telemetry.flush(), error => error.code === 'ENOENT');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(unhandled, null);
+});
