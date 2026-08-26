@@ -1,83 +1,99 @@
-# Genesis New 2.1
+# NewGenesis 2.3.1
 
-Genesis New combina a interface do Genesis Painel, a inteligência estrutural local do SupremeMind e um orquestrador seguro de modelos gratuitos da OpenRouter. A conversa, as tarefas e a memória canônica permanecem locais; trocar de modelo não apaga o raciocínio já consolidado.
+NewGenesis combina uma interface local, o contexto estrutural do SupremeMind e um orquestrador verificável que usa somente rotas gratuitas da OpenRouter. Conversas, tarefas, telemetria, memória canônica e preferências permanecem no computador.
 
-## O que esta versão resolve
-
-- O pedido `Analise o Astraeon e retorne um bash com as informações do projeto.` usa o analisador local: **0 requisições e 0 tokens remotos**.
-- Resultados de ferramentas não crescem indefinidamente: leituras têm paginação, limite de 400 linhas/16 mil caracteres, remoção de data URI/base64 e teto cumulativo por tarefa.
-- Toda chamada HTTP consome um orçamento visível. Não existem retries ou recuperações ocultas.
-- Há teto por requisição, teto cumulativo de entrada, reserva para síntese e deadline total de 90–120 segundos.
-- Streaming interrompido, EOF incompleto e `finish_reason=error/length` nunca são tratados como conclusão verificada.
-- Tokens, custo e requests reportados pelo provedor são preservados também em timeout, erro e STOP; estimativas ficam identificadas como tais.
-- Pedidos de análise são somente leitura. Citar uma função chamada `delete` ou um “fix aplicado” não autoriza alterações.
-- Alterações usam edição exata por trecho, escrita segura e ferramentas limitadas ao diretório aberto. Exclusão só é exposta quando solicitada explicitamente.
-- O catálogo gratuito é descoberto dinamicamente e ranqueado conforme tarefa, capacidade, contexto, suporte a ferramentas, saúde e latência.
-- O SupremeMind indexa HTML, CSS, YAML e código, recupera trechos, calcula relações e invalida o índice quando o agente altera o projeto.
-- A área Neural é um cockpit funcional para tarefas, uso, grafo, contexto, impacto, órbita, memória e diagnóstico.
+O pedido `Analise o Astraeon e retorne um bash com as informações do projeto.` é um contrato especial de visão geral: usa o perfil local do projeto, não consulta o OpenRouter e registra zero requests/tokens remotos.
 
 ## Início
 
-Requisitos: Node.js 20 ou superior e uma chave OpenRouter para respostas remotas.
-
-No Windows, execute `start.bat`. Alternativamente:
+Requisito: Node.js 20 ou superior. A chave OpenRouter é opcional para recursos inteiramente locais e necessária para respostas remotas.
 
 ```powershell
 npm start
 ```
 
-Abra `http://127.0.0.1:7331`. A chave pode permanecer apenas na sessão ou ser guardada no cofre local criptografado.
+No Windows, `start.bat` executa o mesmo comando. Abra `http://127.0.0.1:7331`. Copie `.env.example` para `.env.local` se preferir configurar a chave por arquivo; `.env*` reais são ignorados pelo Git.
 
-## Contratos e orçamentos
+## Tetos globais
 
-Cada mensagem recebe um contrato local com objetivo, tipo, complexidade, formato, etapas, critérios de sucesso, ferramentas permitidas e limites. Os valores efetivos são adaptados à tarefa:
+Os defaults de `src/config.js` são limites máximos, não uma promessa de consumo:
 
-- visão geral do projeto: 0 chamadas, relatório local;
-- análise/diagnóstico: até 3 chamadas, uma rodada de leitura e síntese reservada;
-- mudança/correção: até 6 chamadas, ou 8 em tarefa de alta complexidade;
-- resposta comum: até 3 chamadas;
-- contexto individual: 12–18 mil tokens estimados;
-- deadline total: 90 segundos; mudanças recebem até 120 segundos.
+| Limite | Default |
+| --- | ---: |
+| Rotas candidatas por mensagem | 4 |
+| Requests de inferência sem ferramentas | 5 |
+| Requests quando ferramentas estão habilitadas | 14 |
+| Rodadas de ferramenta | 12 |
+| Contexto de entrada montado pelo motor | 12.000 tokens estimados |
+| Saída por request | 8.192 tokens, ainda limitada pelo modelo |
+| Mensagem do usuário | 120.000 caracteres |
+| Timeout de request | 60 s |
 
-Os limites globais de segurança ainda podem ser reduzidos em `.env.local`:
+Podem ser reduzidos com `GENESIS_MAX_ROUTES_PER_MESSAGE`, `GENESIS_MAX_REQUESTS_PER_MESSAGE`, `GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE`, `GENESIS_MAX_TOOL_ROUNDS`, `GENESIS_INPUT_TOKEN_BUDGET`, `GENESIS_OUTPUT_TOKEN_BUDGET`, `GENESIS_MAX_MESSAGE_CHARACTERS` e `GENESIS_REQUEST_TIMEOUT_MS`.
 
-```text
-OPENROUTER_API_KEY=sk-or-v1-...
-GENESIS_MAX_ROUTES_PER_MESSAGE=3
-GENESIS_MAX_REQUESTS_PER_MESSAGE=4
-GENESIS_MAX_TOOL_REQUESTS_PER_MESSAGE=12
-GENESIS_MAX_TOOL_ROUNDS=12
-GENESIS_INPUT_TOKEN_BUDGET=12000
-GENESIS_OUTPUT_TOKEN_BUDGET=4096
-GENESIS_MAX_MESSAGE_CHARACTERS=120000
-```
+## Orçamento efetivo do contrato
 
-O contrato sempre prevalece quando for mais restritivo que esses tetos globais.
+O menor valor entre a configuração global, a capacidade do modelo e o contrato da tarefa prevalece:
 
-## Contabilidade
+| Contrato | Requests | Entrada cumulativa | Entrada por request | Reserva final | Deadline |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Visão geral local | 0 | 0 | 0 | 0 | local |
+| Análise/diagnóstico | 3 | 30.000 | 14.000 | 1 | 90 s |
+| Resposta comum | 4 | 36.000 | 12.000 | 1 | 90 s |
+| Mudança/correção comum | 6 | 72.000 | 14.000 | 1 | 180 s |
+| Mudança/correção ampla | 14 | 144.000 | 16.000 | 1 | 240 s |
 
-O painel separa tokens enviados/recebidos reportados pelo modelo, estimativas quando `usage` não vem, requests reportados/estimados/desconhecidos, consumo por modelo, custo retornado e economia local de contexto. O histórico de consumo é independente das mensagens exibidas: editar uma mensagem não apaga requests já cobrados.
+O contexto realmente enviado costuma ser menor: respeita o teto de 12.000 tokens do motor, a janela do modelo, a reserva de saída, o modo escolhido e o orçamento restante. Cada chamada é contabilizada antes de sair; não há retry remoto oculto. Fallbacks entre rotas gratuitas e continuações aparecem no ledger e consomem o mesmo orçamento.
+
+## Ferramentas de projeto
+
+- `search_project` aceita até 6 termos alternativos, retorna no máximo 18 ocorrências e contextualiza até 8.
+- `read_project_file` retorna no máximo 220 linhas e 8.000 caracteres sanitizados por chamada, com paginação explícita.
+- Arquivos individuais analisáveis têm até 2 MiB; o inventário aceita até 10.000 arquivos e 128 MiB de texto seguro.
+- Escrita, substituição, criação e movimentação permanecem dentro da raiz real do projeto aberto.
+- Exclusão só é oferecida quando o pedido a autoriza explicitamente.
+- `run_project_check=auto` prefere um script `check` quando ele agrega claramente múltiplas verificações; comandos continuam em allowlist, com ambiente reduzido, timeout de 120 s e saída sanitizada.
+
+## Análise, mutação e verificação
+
+Pedidos de análise/diagnóstico são somente leitura. Uma frase que apenas menciona “delete”, “fix” ou código mutável não autoriza escrita. Mudanças exigem uma ferramenta real, respeitam o modo de aprovação (`ask` ou `full`), produzem evidências e reservam verificação/síntese quando o orçamento permite. Streaming parcial, EOF sem término, timeout, STOP e `finish_reason=error/length` nunca viram sucesso verificado.
+
+## Free-only e contabilidade
+
+O catálogo aceita apenas `openrouter/free` e IDs explicitamente `:free`; nenhum modelo pago é escolhido automaticamente. Requests e tokens reportados pelo provedor continuam contabilizados em sucesso, erro, timeout e STOP. Estimativas são identificadas e editar uma mensagem não apaga consumo anterior.
 
 ## SupremeMind e Neural
 
-O SupremeMind trabalha localmente: inventaria arquivos textuais seguros, extrai símbolos e dependências, cria chunks pesquisáveis, calcula PageRank, bacias, impacto e órbita, e mantém memórias estruturadas. Segredos, certificados, chaves, binários e índices antigos inseguros são recusados.
+O SupremeMind funciona localmente: inventaria texto seguro, extrai símbolos/dependências, cria chunks, calcula relações e mantém memórias estruturadas. Segredos, certificados, chaves, binários e índices inseguros são recusados. O overview ASTRAEON não faz chamada remota.
 
-Acesse `http://127.0.0.1:7331/neural/neural.html` para acompanhar tarefas e consumo, criar o índice, explorar o grafo, consultar contexto/impacto/órbita, manter memórias e diagnosticar provedores e eventos.
+A área Neural fica em `http://127.0.0.1:7331/neural/neural.html` e expõe tarefas, uso, grafo, contexto, impacto, órbita, memória e diagnóstico do runtime.
 
-Leia `SUPREMEMIND_PODER.txt` para a explicação completa e `EVOLUCAO_GENESIS_2_1.txt` para o mapa de evolução.
+## Voz e privacidade
+
+A voz é uma camada progressiva sobre o mesmo composer e histórico do chat. O microfone é permitido pela `Permissions-Policy` somente para a própria origem; CSS e scripts obedecem à CSP `style-src 'self'; script-src 'self'`. Sem `SpeechRecognition` ou `speechSynthesis`, o composer textual permanece funcional e os controles incompatíveis são desativados.
+
+O áudio não é armazenado pelo NewGenesis. O reconhecimento é fornecido pelo navegador e, dependendo dele, pode usar um serviço online do próprio fornecedor. Preferências de voz ficam no armazenamento local do navegador.
+
+## Segurança e rede
+
+- O servidor aceita bind somente em `127.0.0.0/8`, `::1` ou `localhost`.
+- `0.0.0.0`, IP de LAN e hostname externo são recusados; não existe modo remoto seguro suportado nesta versão.
+- `Host` e `Origin` externos são rejeitados. `x-genesis-client: web` é uma barreira anti-CSRF da UI, não autenticação.
+- Chaves persistidas ficam no cofre local criptografado e nunca retornam à UI.
+- O shutdown de `SIGINT`/`SIGTERM` para novas requisições, cancela operações ativas, espera o HTTP fechar e drena stores/telemetria.
+
+Consulte `SECURITY.md` para comunicar vulnerabilidades.
 
 ## Verificação
 
 ```powershell
 npm test
 npm run check
+npm run test:browser
+cd SupremeMind
+npm run check
 ```
 
-## Segurança e dados locais
+`test:browser` requer Chrome, Chromium ou Edge (ou `CHROME_PATH`) e usa o navegador real sem dependências adicionais. O CI cobre Node 20/22/24 no Linux, Node 22 no Windows, o smoke de voz no Chrome e a verificação própria do SupremeMind.
 
-- O servidor escuta `127.0.0.1` por padrão.
-- Conversas, tarefas, telemetria e configurações ficam em `.genesis/`.
-- O índice do projeto fica em `.suprememind/` dentro do projeto aberto.
-- Conteúdo de projeto e anexos é tratado como dado não confiável.
-- Arquivos sensíveis não entram no inventário nem no índice.
-- Operações de escrita não podem sair da raiz real do projeto.
+Veja `CHANGELOG.md`, `RELEASE_NOTES_2.3.1.md` e `RELEASE_CHECKLIST.md` para a preparação da release. `EVOLUCAO_GENESIS_2_1.txt` foi preservado apenas como documento histórico da linha 2.1.

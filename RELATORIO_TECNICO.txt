@@ -1,111 +1,64 @@
-RELATÓRIO TÉCNICO — GENESIS NEW 2.1
-==================================
+RELATÓRIO TÉCNICO — NEWGENESIS 2.3.1
+=====================================
 
-INCIDENTE ASTRAEON
+Estado
+------
+Release candidate de estabilização da linha 2.3. A versão canônica vem de
+package.json; config, health, bootstrap e providers consomem essa fonte.
 
-Prompt reproduzido:
-“Analise o Astraeon e retorne um bash com as informações do projeto.”
+Persistência e lifecycle
+------------------------
+- GenesisTelemetry mantém uma fila sempre tratada e entrega o primeiro erro de
+  disco somente por flush(), eliminando unhandledRejection tardio.
+- O shutdown é idempotente: bloqueia novas requisições, aborta controladores
+  ativos, fecha o servidor HTTP e drena stores e telemetria antes da saída.
+- SIGINT e SIGTERM usam o mesmo mecanismo do runtime e dos testes.
 
-Evidência observada:
-- o contexto inicial tinha aproximadamente 3.213 tokens;
-- o modelo recebeu todas as ferramentas porque o projeto era editável;
-- isso liberou até 12 requests, embora o pedido fosse apenas informativo;
-- resultados de cada leitura eram anexados e reenviados nas rodadas seguintes;
-- uma leitura de index.html continha cerca de 94 mil caracteres de imagens PNG em data URI/base64;
-- o histórico cresceu de forma cumulativa e triangular;
-- timeout era repetido internamente, sem aparecer como nova tentativa no painel;
-- consumo de chamadas falhas não era persistido.
+Segurança
+---------
+- .env, .env.local e .env.* são ignorados, exceto .env.example sem credenciais.
+- Bind fora do loopback é recusado. Host e Origin externos recebem HTTP 403.
+- O cabeçalho x-genesis-client não é tratado como autenticação.
+- CSP permanece sem unsafe-inline. O CSS da voz é um asset same-origin.
+- Permissions-Policy libera microfone somente para self.
 
-Essa combinação explica os 451K tokens do Nemotron Ultra, os 21K do Nano, a demora e a ausência de resposta. O problema não era o inventário inicial do ASTRAEON.
+Orçamentos
+----------
+Tetos default: 4 rotas; 5 requests comuns; 14 requests com ferramentas;
+12 rodadas; 12.000 tokens de contexto; 8.192 tokens de saída.
 
-CORREÇÃO DO CASO
+Contratos efetivos: overview local 0; análise/diagnóstico 3; resposta comum 4;
+mudança comum 6; mudança ampla 14. Deadlines: 90, 180 ou 240 segundos,
+conforme o contrato. Não há retry remoto escondido.
 
-O mesmo prompt agora é classificado como project_overview e gera um relatório Bash local:
-- 0 requests remotos;
-- 0 tokens enviados;
-- 0 tokens recebidos;
-- nenhuma ferramenta de escrita;
-- nenhum base64 no relatório;
-- tarefa e verificação registradas no ledger.
+Ferramentas
+-----------
+Leitura: até 220 linhas e 8.000 caracteres por chamada. run_project_check
+prefere check somente quando o script agrega sinais de verificações distintas;
+a allowlist, o cwd isolado, o ambiente reduzido, o timeout e a sanitização são
+preservados. No Windows, npm.cmd é invocado por cmd.exe com comando interno
+fixo, sem shell baseado em conteúdo do modelo.
 
-PROTEÇÕES CONTRA FLOOD
+Voz
+---
+A camada usa o mesmo composer. SpeechRecognition/speechSynthesis são opcionais;
+sem elas o texto continua habilitado. O smoke real cobre UI/estilo, console,
+atalho de teclado, ARIA e degradação. O áudio não é armazenado pelo Genesis;
+o fornecedor do navegador pode processar reconhecimento online.
 
-- ferramentas escolhidas por intenção e contrato, não pela simples existência de projeto editável;
-- análise e diagnóstico recebem somente busca/leitura e uma rodada de exploração;
-- leitura limitada a 400 linhas e 16.000 caracteres, com nextStartLine;
-- data URI, base64 e strings opacas substituídos por metadados;
-- resultados antigos compactados antes do próximo request;
-- teto rígido por payload e teto cumulativo de tokens de entrada;
-- orçamento único para rota, ferramenta, fallback e continuação;
-- uma chamada HTTP corresponde a uma chamada contabilizada;
-- sem retry oculto em timeout/503;
-- deduplicação semântica de argumentos JSON;
-- reserva obrigatória para síntese final;
-- deadline total de 90–120 segundos.
+CI
+--
+Actions com runtime interno Node 24; matriz Linux Node 20/22/24 e Windows
+Node 22; job Chrome para voz; job isolado para npm run check do SupremeMind.
 
-RESPOSTAS CORTADAS
+Garantias preservadas
+---------------------
+Free-only; overview ASTRAEON local; budget explícito; sem falso sucesso em
+streaming; análise separada de mutação; escrita confinada; exclusão explícita;
+ledger; redaction; memória local; SupremeMind seguro; compatibilidade Windows.
 
-- streaming propaga erro top-level da OpenRouter;
-- AbortError no corpo é classificado corretamente;
-- EOF sem quadro terminal é incomplete_stream;
-- finish_reason error/failed/failure/provider_error é falha;
-- finish_reason length usa continuação compacta sem reenviar toda a saída;
-- se ainda não concluir, a entrega é marcada partial e falha na verificação;
-- usage parcial é preservado no erro.
-
-CONTABILIDADE
-
-- uso reportado tem prioridade;
-- chamadas sem usage mantêm estimativa de entrada e estado unknown/mixed;
-- erros, timeout e STOP persistem consumo;
-- o painel mostra total acumulado por modelo e quantidade real de requests;
-- reiniciar recompõe métricas a partir dos eventos;
-- limpar telemetria remove também a rotação anterior;
-- editar uma conversa não apaga consumo histórico já realizado.
-
-EVOLUÇÃO DO AGENTE
-
-- contrato determinístico com objetivo, complexidade, formato, etapas e critérios;
-- classificação segura entre análise, diagnóstico, mudança e exclusão;
-- complexidade adaptativa sem limite fixo de três etapas para toda alteração;
-- edição exata de trechos para mudanças multi-arquivo econômicas;
-- ledger persistente de objetivo, etapas, evidências, uso e verificação;
-- roteamento dinâmico de modelos :free compatíveis;
-- ranking por intenção, código, raciocínio, multimodalidade, contexto e saúde;
-- cache limitado e isolado por projeto, versão, memória e índice;
-- inventário explicitamente parcial, com itens ignorados e motivos;
-- atualização incremental do ProjectStore após escrita.
-
-SUPREMEMIND
-
-- esquema seguro de índice versão 3;
-- filtros para segredos, credenciais, certificados e binários;
-- parsers de HTML, CSS e YAML;
-- chunks pesquisáveis, BM25, vetores locais, PageRank, bacias, impacto e órbita;
-- contexto hierárquico L0/L1/L2 corrigido;
-- limites rígidos de configuração, grafo, contexto e profundidade;
-- memórias validadas, redigidas e resilientes a linha JSONL corrompida;
-- índice invalidado imediatamente após mutação, nunca reutilizado obsoleto.
-
-ÁREA NEURAL
-
-- sete áreas funcionais: Visão geral, Execução, Grafo, Contexto, Impacto, Memória e Diagnóstico;
-- snapshot agregado real do servidor;
-- tarefas e uso ao vivo;
-- indexação com progresso;
-- grafo SVG interativo e inspetor;
-- consultas reais de contexto, impacto e órbita;
-- estados vazio, offline, indexando e erro;
-- navegação, foco, ARIA, responsividade e reduced-motion;
-- barramento por canal e SSE deduplicado.
-
-MODELOS GRATUITOS
-
-Não existe lista congelada. Somente IDs openrouter/free ou terminados em :free podem ser usados. Classificadores, moderação, áudio e embeddings são excluídos do chat. A disponibilidade real do catálogo é a fonte de verdade.
-
-VALIDAÇÃO
-
-A suíte automatizada cobre ASTRAEON, orçamento, payload, streaming, tokens, roteamento, ferramentas, ledger, SupremeMind, ProjectStore, servidor e Neural:
-
-npm test
-npm run check
+Arquitetura P2
+--------------
+A separação ampla de rotas HTTP, APIs Neural/SupremeMind e execução de chat foi
+deliberadamente adiada. Nesta rodada, apenas lifecycle/shutdown foi extraído,
+pois era necessário para corrigir a race sem refatoração destrutiva.

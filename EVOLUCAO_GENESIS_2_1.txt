@@ -1,3 +1,6 @@
+DOCUMENTO HISTÓRICO — LINHA 2.1 (NÃO DESCREVE A VERSÃO ATUAL)
+Versão atual e limites vigentes: consulte README.md e RELATORIO_TECNICO.txt.
+
 GENESIS NEW 2.1 — EVOLUÇÃO IMPLEMENTADA E PRÓXIMAS FRONTEIRAS
 ================================================================
 
