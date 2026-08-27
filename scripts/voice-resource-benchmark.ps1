@@ -1,5 +1,9 @@
-[CmdletBinding()]
-param([string]$BaseUrl = 'http://127.0.0.1:7331')
+﻿[CmdletBinding()]
+param(
+  [string]$BaseUrl = 'http://127.0.0.1:7331',
+  [ValidateSet('piper', 'kokoro')]
+  [string]$TtsEngine = 'piper'
+)
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -19,7 +23,7 @@ $startInfo.UseShellExecute = $false
 $startInfo.RedirectStandardOutput = $true
 $startInfo.RedirectStandardError = $true
 $benchmarkScript = Join-Path $ProjectRoot 'scripts\voice-loopback-benchmark.mjs'
-$startInfo.Arguments = ('"{0}" "{1}"' -f $benchmarkScript.Replace('"', '\"'), $BaseUrl)
+$startInfo.Arguments = ('"{0}" "{1}" "{2}"' -f $benchmarkScript.Replace('"', '\"'), $BaseUrl, $TtsEngine)
 $benchmark = [Diagnostics.Process]::new()
 $benchmark.StartInfo = $startInfo
 if (-not $benchmark.Start()) { throw 'Não foi possível iniciar o benchmark de loopback.' }
@@ -33,16 +37,22 @@ function Measure-NativeChildren {
   $directIds = @($allProcesses | Where-Object { $_.ParentProcessId -eq $serverProcessId } | ForEach-Object { $_.ProcessId })
   $children = $allProcesses | Where-Object { $_.ProcessId -in $directIds -or $_.ParentProcessId -in $directIds }
   foreach ($child in $children) {
-    $kind = if ($child.Name -like 'whisper-cli*') { 'whisper.cpp' } elseif ($child.Name -like 'python*' -or $child.Name -like 'piper*') { 'piper' } else { continue }
+    $command = [string]$child.CommandLine
+    $kind = if ($child.Name -like 'whisper-server*') { 'whisper.cpp/server' }
+      elseif ($child.Name -like 'whisper-cli*') { 'whisper.cpp/cli' }
+      elseif ($command -match '--engine\s+kokoro') { 'kokoro' }
+      elseif ($command -match '--engine\s+chatterbox') { 'chatterbox' }
+      elseif ($command -match '--engine\s+piper' -or $child.Name -like 'piper*') { 'piper' }
+      else { continue }
     try { $process = Get-Process -Id $child.ProcessId -ErrorAction Stop } catch { continue }
+    $cpuValue = if ($null -eq $process.CPU) { 0 } else { [double]$process.CPU }
     $key = "$kind/$($child.ProcessId)"
     if (-not $samples.ContainsKey($key)) {
-      $samples[$key] = @{ Kind = $kind; Name = $child.Name; Pid = $child.ProcessId; FirstMs = $clock.Elapsed.TotalMilliseconds; LastMs = $clock.Elapsed.TotalMilliseconds; PeakWorkingSetBytes = 0; LastCpuSeconds = 0 }
+      $samples[$key] = @{ Kind = $kind; Name = $child.Name; Pid = $child.ProcessId; FirstMs = $clock.Elapsed.TotalMilliseconds; LastMs = $clock.Elapsed.TotalMilliseconds; PeakWorkingSetBytes = 0; FirstCpuSeconds = $cpuValue; LastCpuSeconds = $cpuValue }
     }
     $sample = $samples[$key]
     $sample.LastMs = $clock.Elapsed.TotalMilliseconds
     $sample.PeakWorkingSetBytes = [Math]::Max($sample.PeakWorkingSetBytes, $process.WorkingSet64)
-    $cpuValue = if ($null -eq $process.CPU) { 0 } else { [double]$process.CPU }
     $sample.LastCpuSeconds = [Math]::Max($sample.LastCpuSeconds, $cpuValue)
   }
 }
@@ -58,8 +68,8 @@ Write-Output $stdout.TrimEnd()
 
 $logicalProcessors = [Environment]::ProcessorCount
 $resources = $samples.Values | Group-Object { $_['Kind'] } | ForEach-Object {
-  $wallSeconds = ($_.Group | ForEach-Object { [Math]::Max(0.1, ($_['LastMs'] - $_['FirstMs'] + 100) / 1000) } | Measure-Object -Sum).Sum
-  $cpuSeconds = ($_.Group | ForEach-Object { $_['LastCpuSeconds'] } | Measure-Object -Sum).Sum
+  $wallSeconds = ($_.Group | ForEach-Object { [Math]::Max(0.1, ($_['LastMs'] - $_['FirstMs'] + 100) / 1000) } | Measure-Object -Maximum).Maximum
+  $cpuSeconds = ($_.Group | ForEach-Object { [Math]::Max(0, $_['LastCpuSeconds'] - $_['FirstCpuSeconds']) } | Measure-Object -Sum).Sum
   [ordered]@{
     engine = $_.Name
     processNames = @($_.Group | ForEach-Object { $_['Name'] } | Sort-Object -Unique)

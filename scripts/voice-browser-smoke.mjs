@@ -151,21 +151,42 @@ const supportedVoice = `
     stop() { queueMicrotask(() => this.onend?.()); }
     abort() { queueMicrotask(() => this.onend?.()); }
   }
-  class FakeUtterance { constructor(text) { this.text = text; } }
+  class FakeAudioContext {
+    constructor() { this.state = 'running'; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    decodeAudioData() { return Promise.resolve({ duration: 1 }); }
+    createBufferSource() {
+      const source = {
+        playbackRate: { value: 1 }, connect() {}, disconnect() {},
+        start() { window.__genesisSource = source; },
+        stop() { window.__genesisCancelCount = (window.__genesisCancelCount || 0) + 1; queueMicrotask(() => source.onended?.()); }
+      };
+      return source;
+    }
+  }
   Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: FakeRecognition });
   Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: FakeRecognition });
-  Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: FakeUtterance });
-  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
-    getVoices: () => [], addEventListener() {},
-    speak(utterance) { window.__genesisUtterance = utterance; queueMicrotask(() => utterance.onstart?.()); },
-    cancel() { window.__genesisCancelCount = (window.__genesisCancelCount || 0) + 1; const active = window.__genesisUtterance; window.__genesisUtterance = null; queueMicrotask(() => active?.onerror?.({ error: 'canceled' })); }
-  } });
+  Object.defineProperty(window, 'AudioContext', { configurable: true, value: FakeAudioContext });
+  document.addEventListener('genesis:voice-submit', event => {
+    (window.__genesisVoiceSubmissions ||= []).push(event.detail);
+    event.stopImmediatePropagation();
+  });
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const pathname = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+    if (pathname === '/api/voice/status') return Promise.resolve(new Response(JSON.stringify({
+      available: true, localOnly: true, stt: { whisper: { available: false, profiles: {} } },
+      tts: { kokoro: { available: true, voices: ['pf_dora', 'pm_alex', 'pm_santa'] }, piper: { available: false }, chatterbox: { available: false } }
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    if (pathname === '/api/voice/synthesize') return Promise.resolve(new Response(new Uint8Array(64), { status: 200, headers: { 'content-type': 'audio/wav' } }));
+    return originalFetch(input, init);
+  };
 `;
 
 const unsupportedVoice = `
   Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: undefined });
   Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: undefined });
-  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: undefined });
+  Object.defineProperty(window, 'AudioContext', { configurable: true, value: undefined });
 `;
 
 if (process.argv[1] === path.resolve(import.meta.filename)) {
@@ -217,9 +238,6 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
 
       const conversation = await evaluate(cdp, `(async () => {
         const wait = () => new Promise(resolve => setTimeout(resolve, 0));
-        const form = document.querySelector('#composerForm');
-        let submissions = 0;
-        form.requestSubmit = () => { submissions += 1; };
         const mode = document.querySelector('#voiceConversationMode');
         mode.checked = true;
         mode.dispatchEvent(new Event('change', { bubbles: true }));
@@ -237,7 +255,7 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         await wait();
         const speakingState = window.__genesisVoice.controller.machine.current;
         document.dispatchEvent(new CustomEvent('genesis:chat-end'));
-        window.__genesisUtterance.onend();
+        window.__genesisSource.onended();
         await wait(); await wait();
         const resumedState = window.__genesisVoice.controller.machine.current;
 
@@ -256,16 +274,19 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         mode.dispatchEvent(new Event('change', { bubbles: true }));
         return {
           firstState, thinkingState, speakingState, resumedState, interruptedState,
-          submissions, ttsCancelled: (window.__genesisCancelCount || 0) > cancelBefore,
+          submissions: window.__genesisVoiceSubmissions?.length || 0,
+          submittedInputMode: window.__genesisVoiceSubmissions?.[0]?.inputMetadata?.inputMode,
+          ttsCancelled: (window.__genesisCancelCount || 0) > cancelBefore,
           finalComposer: document.querySelector('#messageInput').value,
           finalState: window.__genesisVoice.controller.machine.current
         };
       })()`);
       assert.deepEqual(conversation, {
         firstState: 'LISTENING', thinkingState: 'THINKING', speakingState: 'SPEAKING', resumedState: 'LISTENING',
-        interruptedState: 'SPEECH_DETECTED', submissions: 2, ttsCancelled: true,
+        interruptedState: 'SPEECH_DETECTED', submissions: 2, submittedInputMode: 'voice', ttsCancelled: true,
         finalComposer: 'nova pergunta agora', finalState: 'IDLE'
       });
+
     });
 
     await withBrowser(executable, url, unsupportedVoice, async cdp => {

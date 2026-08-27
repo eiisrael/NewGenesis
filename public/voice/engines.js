@@ -123,89 +123,62 @@ export class LocalSpeechInputEngine {
   }
 }
 
-export class BrowserTextToSpeechEngine {
-  constructor(synthesis = globalThis.speechSynthesis || null) {
-    this.synthesis = synthesis;
-    this.active = null;
-  }
-
-  get available() { return Boolean(this.synthesis && globalThis.SpeechSynthesisUtterance); }
-
-  voices() { return this.synthesis?.getVoices?.() || []; }
-
-  speak(text, options = {}) {
-    if (!this.available) return Promise.reject(engineError('browser_tts_unavailable', 'Leitura em voz alta do navegador indisponível.'));
-    this.cancel();
-    return new Promise((resolve, reject) => {
-      const utterance = new SpeechSynthesisUtterance(String(text || ''));
-      utterance.lang = options.lang || 'pt-BR';
-      utterance.rate = Number(options.rate) || 1;
-      const voice = this.voices().find(item => item.voiceURI === options.voiceURI)
-        || this.voices().find(item => String(item.lang).toLowerCase() === utterance.lang.toLowerCase())
-        || this.voices().find(item => String(item.lang).toLowerCase().startsWith(utterance.lang.slice(0, 2).toLowerCase()));
-      if (voice) utterance.voice = voice;
-      utterance.onstart = () => options.onFirstAudio?.();
-      utterance.onend = () => { if (this.active === utterance) this.active = null; resolve(); };
-      utterance.onerror = event => {
-        if (this.active === utterance) this.active = null;
-        if (event.error === 'canceled' || event.error === 'interrupted') resolve();
-        else reject(engineError('browser_tts_failed', 'A voz do navegador não conseguiu reproduzir a resposta.'));
-      };
-      this.active = utterance;
-      this.synthesis.speak(utterance);
-    });
-  }
-
-  cancel() {
-    this.active = null;
-    this.synthesis?.cancel?.();
-  }
-}
-
 export class LocalTextToSpeechEngine {
   constructor({ endpoint = '/api/voice/synthesize', engine }) {
     this.endpoint = endpoint;
     this.engine = engine;
     this.serverAvailable = false;
-    this.controller = null;
+    this.controllers = new Set();
     this.context = null;
     this.source = null;
+    this.generation = 0;
   }
 
   get available() { return this.serverAvailable && Boolean(globalThis.AudioContext || globalThis.webkitAudioContext); }
 
   setAvailable(available) { this.serverAvailable = available === true; }
 
-  async speak(text, options = {}) {
+  async prepare(text, options = {}) {
     if (!this.available) throw engineError(`${this.engine}_unavailable`, `${this.engine} não está instalado ou configurado.`);
-    this.cancel();
     const controller = new AbortController();
-    this.controller = controller;
-    let response;
+    const generation = this.generation;
+    this.controllers.add(controller);
     try {
-      response = await fetch(this.endpoint, {
+      const response = await fetch(this.endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-genesis-client': 'web' },
-        body: JSON.stringify({ text, engine: this.engine, preset: options.preset, rate: options.rate }),
+        body: JSON.stringify({ text, engine: this.engine, preset: options.preset, rate: options.rate, voice: options.ttsVoice }),
         signal: controller.signal
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw engineError(payload?.error?.code || `${this.engine}_failed`, payload?.error?.message || `${this.engine} falhou (${response.status}).`);
+      }
+      const audioBytes = await response.arrayBuffer();
+      if (!audioBytes.byteLength) throw engineError(`${this.engine}_empty_audio`, 'O engine local retornou áudio vazio.');
+      const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+      let buffer;
+      try {
+        this.context ||= new AudioContextClass({ latencyHint: 'interactive' });
+        if (this.context.state === 'suspended') await this.context.resume();
+        buffer = await this.context.decodeAudioData(audioBytes.slice(0));
+      } catch (error) {
+        throw audioOutputError(error, this.engine);
+      }
+      if (generation !== this.generation) throw new DOMException('Síntese cancelada.', 'AbortError');
+      options.onPrepared?.();
+      return { buffer, generation, rate: Math.min(1.6, Math.max(0.7, Number(options.rate) || 1)) };
     } finally {
-      if (this.controller === controller) this.controller = null;
+      this.controllers.delete(controller);
     }
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw engineError(payload?.error?.code || `${this.engine}_failed`, payload?.error?.message || `${this.engine} falhou (${response.status}).`);
-    }
-    const audioBytes = await response.arrayBuffer();
-    if (!audioBytes.byteLength) throw engineError(`${this.engine}_empty_audio`, 'O engine local retornou áudio vazio.');
-    options.onPrepared?.();
-    const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
-    this.context ||= new AudioContextClass();
+  }
+
+  async play(prepared, options = {}) {
+    if (!prepared?.buffer || prepared.generation !== this.generation) throw new DOMException('Reprodução cancelada.', 'AbortError');
     if (this.context.state === 'suspended') await this.context.resume();
-    const decoded = await this.context.decodeAudioData(audioBytes.slice(0));
     const source = this.context.createBufferSource();
-    source.buffer = decoded;
-    source.playbackRate.value = Math.min(1.6, Math.max(0.7, Number(options.rate) || 1));
+    source.buffer = prepared.buffer;
+    source.playbackRate.value = prepared.rate;
     source.connect(this.context.destination);
     this.source = source;
     await new Promise((resolve, reject) => {
@@ -217,15 +190,21 @@ export class LocalTextToSpeechEngine {
       try {
         source.start(0);
         options.onFirstAudio?.();
-      } catch {
-        reject(engineError(`${this.engine}_playback_failed`, 'Não foi possível reproduzir o áudio local.'));
+      } catch (error) {
+        reject(audioOutputError(error, this.engine));
       }
     });
   }
 
+  async speak(text, options = {}) {
+    const prepared = await this.prepare(text, options);
+    return this.play(prepared, options);
+  }
+
   cancel() {
-    this.controller?.abort();
-    this.controller = null;
+    this.generation += 1;
+    for (const controller of this.controllers) controller.abort();
+    this.controllers.clear();
     const source = this.source;
     this.source = null;
     if (source) {
@@ -254,4 +233,12 @@ function engineError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function audioOutputError(error, engine) {
+  if (error?.name === 'NotFoundError' || /device not found/i.test(String(error?.message || ''))) {
+    return engineError('audio_output_not_found', 'Nenhuma saída de áudio ativa foi encontrada. Selecione ou conecte um alto-falante e tente novamente.');
+  }
+  if (error?.name === 'NotAllowedError') return engineError('audio_output_blocked', 'O navegador bloqueou a reprodução de áudio até uma interação do usuário.');
+  return engineError(`${engine}_playback_failed`, 'O áudio local foi gerado, mas o navegador não conseguiu reproduzi-lo.');
 }

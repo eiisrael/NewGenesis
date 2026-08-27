@@ -70,6 +70,7 @@ export class MicrophoneAudioInput {
     this.preRoll = [];
     this.sampleRate = 0;
     this.detector = null;
+    this.captureMode = 'uninitialized';
   }
 
   get available() {
@@ -79,19 +80,44 @@ export class MicrophoneAudioInput {
   async open() {
     if (this.stream) return;
     if (!this.available) throw voiceError('microphone_unavailable', 'Captura local do microfone não está disponível neste navegador.');
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      video: false
-    });
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        video: false
+      });
+    } catch (error) {
+      throw microphoneError(error);
+    }
     const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
-    this.context = new Context({ latencyHint: 'interactive' });
-    await this.context.resume();
+    try {
+      this.context = new Context({ latencyHint: 'interactive' });
+      await this.context.resume();
+    } catch (error) {
+      for (const track of this.stream?.getTracks?.() || []) track.stop();
+      this.stream = null;
+      throw microphoneError(error);
+    }
     this.sampleRate = this.context.sampleRate;
     this.source = this.context.createMediaStreamSource(this.stream);
-    this.processor = this.context.createScriptProcessor(2048, 1, 1);
     this.mute = this.context.createGain();
     this.mute.gain.value = 0;
-    this.processor.onaudioprocess = event => this.#process(event.inputBuffer.getChannelData(0));
+    if (this.context.audioWorklet?.addModule && globalThis.AudioWorkletNode) {
+      try {
+        await this.context.audioWorklet.addModule('/voice/audio-capture.worklet.js');
+        this.processor = new AudioWorkletNode(this.context, 'genesis-audio-capture', {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1]
+        });
+        this.processor.port.onmessage = event => this.#process(event.data);
+        this.captureMode = 'audio-worklet';
+      } catch {
+        this.processor = null;
+      }
+    }
+    if (!this.processor) {
+      this.processor = this.context.createScriptProcessor(2048, 1, 1);
+      this.processor.onaudioprocess = event => this.#process(event.inputBuffer.getChannelData(0));
+      this.captureMode = 'script-processor-fallback';
+    }
     this.source.connect(this.processor);
     this.processor.connect(this.mute);
     this.mute.connect(this.context.destination);
@@ -120,12 +146,14 @@ export class MicrophoneAudioInput {
   async close() {
     this.disarm();
     if (this.processor) this.processor.onaudioprocess = null;
+    if (this.processor?.port) this.processor.port.onmessage = null;
     try { this.source?.disconnect(); } catch { /* já desconectado */ }
     try { this.processor?.disconnect(); } catch { /* já desconectado */ }
     try { this.mute?.disconnect(); } catch { /* já desconectado */ }
     for (const track of this.stream?.getTracks?.() || []) track.stop();
     await this.context?.close?.().catch(() => {});
     this.stream = this.context = this.processor = this.source = this.mute = null;
+    this.captureMode = 'closed';
   }
 
   #process(input) {
@@ -214,4 +242,17 @@ function voiceError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function microphoneError(error) {
+  if (error?.name === 'NotFoundError' || /device not found/i.test(String(error?.message || ''))) {
+    return voiceError('microphone_not_found', 'Nenhum microfone ativo foi encontrado. Conecte ou habilite um dispositivo de entrada e tente novamente.');
+  }
+  if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+    return voiceError('microphone_permission_denied', 'A permissão do microfone foi negada pelo navegador.');
+  }
+  if (error?.name === 'NotReadableError') {
+    return voiceError('microphone_busy', 'O microfone está ocupado ou indisponível para este navegador.');
+  }
+  return voiceError('microphone_open_failed', 'Não foi possível iniciar o microfone local.');
 }

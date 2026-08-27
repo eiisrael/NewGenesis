@@ -18,6 +18,10 @@ export class VoiceConversationController {
     this.chatBuffer = '';
     this.firstTextSeen = false;
     this.suppressPlaybackIdle = false;
+    this.restartQueued = false;
+    this.manualSpeech = false;
+    this.pushToTalkDeadline = 0;
+    this.pushToTalkRetry = null;
     this.metrics = [];
     this.destroyed = false;
     this.#bindPlayback();
@@ -43,11 +47,13 @@ export class VoiceConversationController {
 
   async togglePushToTalk() {
     if ([VOICE_STATES.LISTENING, VOICE_STATES.SPEECH_DETECTED, VOICE_STATES.TRANSCRIBING].includes(this.machine.current)) {
+      this.#cancelPushToTalkRetry();
       this.stopInput();
       this.machine.reset({ reason: 'push-to-talk-stop' });
       return;
     }
     this.#cancelPlayback('push-to-talk');
+    this.pushToTalkDeadline = Date.now() + 15_000;
     await this.listen({ once: true });
   }
 
@@ -141,6 +147,7 @@ export class VoiceConversationController {
     if (!spoken) return;
     this.stopInput();
     this.#cancelPlayback('manual-speak');
+    this.manualSpeech = true;
     this.chatFinished = true;
     this.playback.enqueue(spoken, this.settings);
   }
@@ -154,6 +161,8 @@ export class VoiceConversationController {
   }
 
   stopAll(reason = 'cancelled') {
+    this.#cancelPushToTalkRetry();
+    this.manualSpeech = false;
     this.stopInput();
     this.#cancelPlayback(reason);
     this.chatBuffer = '';
@@ -216,6 +225,7 @@ export class VoiceConversationController {
   #onTranscript(text, detail, { once }) {
     const transcript = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 12000);
     if (!transcript) return;
+    if (once) this.#cancelPushToTalkRetry();
     if (this.bargeCandidate && transcript.split(/\s+/).length >= 3 && similarityToPlayback(transcript, this.playback.lastSpokenText) >= 0.72) {
       this.callbacks.onStatus?.('feedback-ignored');
       this.mark('voice.feedback_ignored', { engine: detail.engine });
@@ -240,24 +250,77 @@ export class VoiceConversationController {
 
   #onInputEnd(detail, { once, playbackActive }) {
     this.inputActive = false;
-    if (detail.transcript || this.machine.current === VOICE_STATES.THINKING || this.machine.current === VOICE_STATES.TRANSCRIBING) return;
+    if (detail.transcript || this.machine.current === VOICE_STATES.THINKING) return;
+    if (this.machine.current === VOICE_STATES.TRANSCRIBING) {
+      this.#recoverNoSpeech({ once, playbackActive, engine: detail.engine });
+      return;
+    }
     if (playbackActive && this.playback.running) {
       queueMicrotask(() => this.#armBargeMonitor());
       return;
     }
-    if (this.conversationEnabled && !once && this.chatFinished) queueMicrotask(() => this.listen({ once: false }).catch(() => {}));
+    if (this.conversationEnabled && !once && this.chatFinished) this.#scheduleConversationListen();
     else if (this.machine.current !== VOICE_STATES.ERROR) this.machine.reset({ reason: 'input-ended' });
   }
 
-  #onInputError(error, { playbackActive }) {
+  #onInputError(error, { once, playbackActive }) {
     this.inputActive = false;
     if (error?.code === 'browser_stt_no-speech') {
-      this.callbacks.onStatus?.('no-speech');
-      if (playbackActive && this.playback.running) queueMicrotask(() => this.#armBargeMonitor());
-      else if (this.conversationEnabled && this.chatFinished) queueMicrotask(() => this.listen({ once: false }).catch(() => {}));
+      this.#recoverNoSpeech({ once, playbackActive, engine: 'browser' });
       return;
     }
     this.#fail(error);
+  }
+
+  #recoverNoSpeech({ once, playbackActive, engine }) {
+    this.bargeCandidate = false;
+    this.callbacks.onInterim?.('', { final: true });
+    this.callbacks.onStatus?.('no-speech');
+    this.mark('voice.stt_empty', { engine });
+    if (playbackActive && this.playback.running) {
+      queueMicrotask(() => this.#armBargeMonitor());
+      return;
+    }
+    if (once && Date.now() < this.pushToTalkDeadline) {
+      this.#transition(VOICE_STATES.LISTENING, { reason: 'push-to-talk-waiting' });
+      this.#schedulePushToTalkListen();
+      return;
+    }
+    if (once) this.#cancelPushToTalkRetry();
+    if (this.conversationEnabled && !once && this.chatFinished) {
+      this.#transition(VOICE_STATES.LISTENING, { reason: 'no-speech' });
+      this.#scheduleConversationListen();
+    } else if (this.machine.current !== VOICE_STATES.ERROR) {
+      this.machine.reset({ reason: 'no-speech' });
+    }
+  }
+
+  #scheduleConversationListen() {
+    if (this.restartQueued) return;
+    this.restartQueued = true;
+    queueMicrotask(() => {
+      this.restartQueued = false;
+      if (this.destroyed || !this.conversationEnabled || !this.chatFinished || this.inputActive) return;
+      this.listen({ once: false }).catch(() => {});
+    });
+  }
+
+  #schedulePushToTalkListen() {
+    if (this.pushToTalkRetry) return;
+    this.pushToTalkRetry = setTimeout(() => {
+      this.pushToTalkRetry = null;
+      if (this.destroyed || Date.now() >= this.pushToTalkDeadline || this.inputActive || this.machine.current !== VOICE_STATES.LISTENING) {
+        if (Date.now() >= this.pushToTalkDeadline && this.machine.current !== VOICE_STATES.ERROR) this.machine.reset({ reason: 'push-to-talk-timeout' });
+        return;
+      }
+      this.listen({ once: true }).catch(() => {});
+    }, 250);
+  }
+
+  #cancelPushToTalkRetry() {
+    if (this.pushToTalkRetry) clearTimeout(this.pushToTalkRetry);
+    this.pushToTalkRetry = null;
+    this.pushToTalkDeadline = 0;
   }
 
   #enqueueChunks(chunks) {
@@ -274,7 +337,7 @@ export class VoiceConversationController {
         this.mark('voice.tts_start', { engine: detail.engine });
         this.#transition(VOICE_STATES.SPEAKING, { engine: detail.engine });
         this.callbacks.onStatus?.('speaking', detail);
-        this.#armBargeMonitor();
+        if (!this.manualSpeech) this.#armBargeMonitor();
       },
       onFirstAudio: detail => this.mark('voice.first_audio', detail),
       onEnd: detail => this.mark('voice.tts_end', detail),
@@ -282,6 +345,12 @@ export class VoiceConversationController {
         if (this.suppressPlaybackIdle) return;
         if (detail.cancelled && [VOICE_STATES.INTERRUPTING, VOICE_STATES.SPEECH_DETECTED, VOICE_STATES.TRANSCRIBING].includes(this.machine.current)) return;
         this.stopInput();
+        if (this.manualSpeech) {
+          this.manualSpeech = false;
+          this.machine.reset({ reason: 'manual-speech-complete' });
+          this.callbacks.onStatus?.('idle');
+          return;
+        }
         if (this.chatFinished) this.#resumeAfterTurn();
         else this.#transition(VOICE_STATES.THINKING, { reason: 'awaiting-text' });
       },
@@ -306,7 +375,7 @@ export class VoiceConversationController {
   #resumeAfterTurn() {
     if (this.conversationEnabled) {
       this.#transition(VOICE_STATES.LISTENING, { reason: 'auto-resume' });
-      queueMicrotask(() => this.listen({ once: false }).catch(() => {}));
+      this.#scheduleConversationListen();
     } else {
       this.machine.reset({ reason: 'turn-complete' });
       this.callbacks.onStatus?.('idle');
@@ -314,6 +383,8 @@ export class VoiceConversationController {
   }
 
   #fail(error) {
+    this.#cancelPushToTalkRetry();
+    this.manualSpeech = false;
     this.stopInput();
     if (this.machine.current !== VOICE_STATES.ERROR) this.#transition(VOICE_STATES.ERROR, { code: error?.code, message: error?.message });
     this.callbacks.onStatus?.('error', error);

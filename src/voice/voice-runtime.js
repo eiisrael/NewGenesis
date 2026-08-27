@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_AUDIO_DURATION_SECONDS = 45;
@@ -17,15 +18,19 @@ const ttsPresets = Object.freeze({
 });
 
 export class VoiceRuntime {
-  constructor({ root, dataDir, telemetry = null } = {}) {
+  constructor({ root, dataDir, telemetry = null, spawnImpl = spawn, fetchImpl = globalThis.fetch } = {}) {
     this.root = path.resolve(root || process.cwd());
     this.voiceDir = path.resolve(dataDir || path.join(this.root, '.genesis'), 'voice');
     this.tempDir = path.join(this.voiceDir, 'tmp');
     this.telemetry = telemetry;
+    this.spawnImpl = spawnImpl;
+    this.fetchImpl = fetchImpl;
     this.manifest = defaultManifest();
     this.snapshot = emptyStatus();
     this.active = { stt: false, tts: false };
     this.children = new Set();
+    this.ttsWorkers = new Map();
+    this.whisperServer = null;
     this.stopping = false;
   }
 
@@ -49,6 +54,7 @@ export class VoiceRuntime {
 
   async refreshStatus() {
     const whisperBinary = this.#resolve(this.manifest.whisper.binary);
+    const whisperServerBinary = this.#resolve(this.manifest.whisper.serverBinary);
     const vadModel = this.#resolve(this.manifest.whisper.vadModel);
     const profiles = {};
     for (const [name, entry] of Object.entries(this.manifest.whisper.profiles)) {
@@ -59,15 +65,21 @@ export class VoiceRuntime {
 
     const piperPython = this.#resolve(this.manifest.piper.python);
     const chatterboxPython = this.#resolve(this.manifest.chatterbox.python);
-    const worker = path.join(this.root, 'scripts', 'voice', 'tts-worker.py');
+    const worker = path.join(this.root, 'scripts', 'voice', 'tts-server.py');
     const piperModel = this.#resolve(this.manifest.piper.model);
     const piperConfig = this.#resolve(this.manifest.piper.config);
     const chatterboxSource = this.#resolve(this.manifest.chatterbox.source);
     const chatterboxMarker = this.#resolve(this.manifest.chatterbox.readyMarker);
+    const kokoroPython = this.#resolve(this.manifest.kokoro.python);
+    const kokoroModel = this.#resolve(this.manifest.kokoro.model);
+    const kokoroConfig = this.#resolve(this.manifest.kokoro.config);
+    const kokoroVoices = this.#resolve(this.manifest.kokoro.voices);
     const piperPythonAvailable = await isFile(piperPython);
     const chatterboxPythonAvailable = await isFile(chatterboxPython);
+    const kokoroPythonAvailable = await isFile(kokoroPython);
+    const persistentSttAvailable = whisperAvailable && await isFile(whisperServerBinary);
     this.snapshot = {
-      available: whisperAvailable || piperPythonAvailable || chatterboxPythonAvailable,
+      available: whisperAvailable || piperPythonAvailable || chatterboxPythonAvailable || kokoroPythonAvailable,
       localOnly: true,
       storesRawAudio: false,
       limits: { maxAudioBytes: MAX_AUDIO_BYTES, maxAudioSeconds: MAX_AUDIO_DURATION_SECONDS, maxTextCharacters: MAX_TTS_TEXT, concurrencyPerEngine: 1 },
@@ -76,12 +88,15 @@ export class VoiceRuntime {
           available: whisperAvailable,
           version: this.manifest.whisper.version,
           vad: await isFile(vadModel),
+          processMode: persistentSttAvailable ? 'persistent-server' : 'cli-per-request',
+          warm: Boolean(this.whisperServer?.ready),
           profiles
         }
       },
       tts: {
-        chatterbox: { available: chatterboxPythonAvailable && await isFile(worker) && await isDirectory(chatterboxSource) && await isFile(chatterboxMarker), version: this.manifest.chatterbox.version, model: this.manifest.chatterbox.model },
-        piper: { available: piperPythonAvailable && await isFile(piperModel) && await isFile(piperConfig), version: this.manifest.piper.version, model: this.manifest.piper.voice }
+        kokoro: { available: kokoroPythonAvailable && await isFile(worker) && await isFile(kokoroModel) && await isFile(kokoroConfig) && await hasKokoroVoices(kokoroVoices), version: this.manifest.kokoro.version, model: this.manifest.kokoro.modelId, voices: [...this.manifest.kokoro.voiceNames], warm: this.ttsWorkers.get('kokoro')?.ready === true, processMode: 'persistent-worker' },
+        chatterbox: { available: chatterboxPythonAvailable && await isFile(worker) && await isDirectory(chatterboxSource) && await isFile(chatterboxMarker), version: this.manifest.chatterbox.version, model: this.manifest.chatterbox.model, warm: this.ttsWorkers.get('chatterbox')?.ready === true, processMode: 'persistent-worker' },
+        piper: { available: piperPythonAvailable && await isFile(worker) && await isFile(piperModel) && await isFile(piperConfig), version: this.manifest.piper.version, model: this.manifest.piper.voice, warm: this.ttsWorkers.get('piper')?.ready === true, processMode: 'persistent-worker' }
       }
     };
     return this.status();
@@ -96,47 +111,51 @@ export class VoiceRuntime {
     const selected = this.#selectWhisperProfile(profile);
     if (!selected) throw runtimeError(503, 'whisper_not_installed', 'O perfil solicitado do Whisper local não está instalado. Execute scripts/setup-voice.ps1.');
     this.active.stt = true;
-    const requestDir = await fs.mkdtemp(path.join(this.tempDir, 'stt-'));
-    const inputPath = path.join(requestDir, 'input.wav');
-    const outputPrefix = path.join(requestDir, 'transcript');
     const startedAt = performance.now();
     try {
-      await fs.writeFile(inputPath, buffer, { flag: 'wx', mode: 0o600 });
-      const args = ['-m', selected.model, '-f', inputPath, '-l', 'pt', '-oj', '-of', outputPrefix, '-np', '-nt'];
-      const vad = this.#resolve(this.manifest.whisper.vadModel);
-      if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
-      await this.#run(this.#resolve(this.manifest.whisper.binary), args, { timeoutMs: STT_TIMEOUT_MS, kind: 'stt' });
-      const payload = JSON.parse(await fs.readFile(`${outputPrefix}.json`, 'utf8'));
+      let payload;
+      let processMode = 'persistent-server';
+      if (await isFile(this.#resolve(this.manifest.whisper.serverBinary))) {
+        try {
+          payload = await this.#transcribeWithServer(buffer, selected);
+        } catch (error) {
+          this.#emit('voice.stt.server_fallback', `Servidor persistente indisponível; usando CLI para este turno. ${sanitizeEngineError(error.message)}`, 'warning');
+          this.#stopWhisperServer();
+          payload = await this.#transcribeWithCli(buffer, selected);
+          processMode = 'cli-fallback';
+        }
+      } else {
+        payload = await this.#transcribeWithCli(buffer, selected);
+        processMode = 'cli-per-request';
+      }
       const text = whisperText(payload).replace(/\s+/g, ' ').trim().slice(0, 12000);
-      return { text, language: payload?.result?.language || 'pt', profile: selected.name, durationSeconds: wav.durationSeconds, latencyMs: Math.round(performance.now() - startedAt) };
+      return { text, language: payload?.result?.language || payload?.language || 'pt', profile: selected.name, processMode, durationSeconds: wav.durationSeconds, latencyMs: Math.round(performance.now() - startedAt) };
     } finally {
       this.active.stt = false;
-      await fs.rm(requestDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
     }
   }
 
-  async synthesize({ text, engine = 'chatterbox', preset = 'natural', rate = 1 } = {}) {
+  async synthesize({ text, engine = 'kokoro', preset = 'natural', rate = 1, voice = 'pf_dora' } = {}) {
     if (this.stopping) throw runtimeError(503, 'voice_shutting_down', 'A camada de voz está encerrando.');
     if (this.active.tts) throw runtimeError(429, 'voice_tts_busy', 'O sintetizador local já está gerando outra fala.');
     const safeText = validateTtsText(text);
-    if (!['chatterbox', 'piper'].includes(engine)) throw runtimeError(400, 'invalid_tts_engine', 'Engine TTS inválido.');
+    if (!['kokoro', 'chatterbox', 'piper'].includes(engine)) throw runtimeError(400, 'invalid_tts_engine', 'Engine TTS inválido.');
     const current = await this.refreshStatus();
     if (!current.tts[engine]?.available) throw runtimeError(503, `${engine}_not_installed`, `${engine} não está instalado. Execute scripts/setup-voice.ps1.`);
     const selectedPreset = Object.hasOwn(ttsPresets, preset) ? preset : 'natural';
     this.active.tts = true;
     const requestDir = await fs.mkdtemp(path.join(this.tempDir, 'tts-'));
-    const textPath = path.join(requestDir, 'input.txt');
     const outputPath = path.join(requestDir, 'output.wav');
     const startedAt = performance.now();
     try {
-      await fs.writeFile(textPath, safeText, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-      if (engine === 'chatterbox') await this.#runChatterbox({ textPath, outputPath, preset: selectedPreset });
-      else await this.#runPiper({ textPath, outputPath });
+      const selectedVoice = this.manifest.kokoro.voiceNames.includes(voice) ? voice : 'pf_dora';
+      const worker = await this.#ttsWorker(engine);
+      await worker.request({ text: safeText, output: outputPath, preset: selectedPreset, rate: clamp(rate, 0.7, 1.6, 1), voice: selectedVoice }, TTS_TIMEOUT_MS);
       const audio = await fs.readFile(outputPath);
       if (audio.length < 44 || audio.length > MAX_TTS_AUDIO_BYTES || audio.toString('ascii', 0, 4) !== 'RIFF') {
         throw runtimeError(502, 'invalid_tts_audio', 'O sintetizador local retornou um WAV inválido.');
       }
-      return { audio, engine, preset: selectedPreset, latencyMs: Math.round(performance.now() - startedAt) };
+      return { audio, engine, preset: selectedPreset, processMode: 'persistent-worker', latencyMs: Math.round(performance.now() - startedAt) };
     } finally {
       this.active.tts = false;
       await fs.rm(requestDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
@@ -144,7 +163,7 @@ export class VoiceRuntime {
   }
 
   recordMetric({ name, at, detail } = {}) {
-    const allowed = new Set(['voice.vad_start', 'voice.vad_end', 'voice.stt_start', 'voice.stt_final', 'voice.chat_start', 'voice.first_text', 'voice.tts_start', 'voice.first_audio', 'voice.tts_end', 'voice.barge_in', 'voice.feedback_ignored']);
+    const allowed = new Set(['voice.vad_start', 'voice.vad_end', 'voice.stt_start', 'voice.stt_empty', 'voice.stt_final', 'voice.chat_start', 'voice.first_text', 'voice.tts_prepare_start', 'voice.tts_start', 'voice.first_audio', 'voice.tts_end', 'voice.barge_in', 'voice.feedback_ignored']);
     if (!allowed.has(name)) throw runtimeError(400, 'invalid_voice_metric', 'Métrica de voz inválida.');
     const safeDetail = {};
     if (typeof detail?.engine === 'string') safeDetail.engine = detail.engine.slice(0, 30);
@@ -155,6 +174,9 @@ export class VoiceRuntime {
 
   beginShutdown() {
     this.stopping = true;
+    this.#stopWhisperServer();
+    for (const worker of this.ttsWorkers.values()) worker.close();
+    this.ttsWorkers.clear();
     for (const child of this.children) child.kill('SIGTERM');
   }
 
@@ -165,33 +187,136 @@ export class VoiceRuntime {
   }
 
   #selectWhisperProfile(requested) {
-    const order = requested === 'accurate' ? ['accurate', 'balanced', 'rapid'] : requested === 'rapid' ? ['rapid', 'balanced', 'accurate'] : ['balanced', 'rapid', 'accurate'];
-    for (const name of order) {
-      if (this.snapshot.stt.whisper.profiles[name]?.available) return { name, model: this.#resolve(this.manifest.whisper.profiles[name].model) };
+    const name = profileNames[requested] || 'balanced';
+    if (!this.snapshot.stt.whisper.profiles[name]?.available) return null;
+    return { name, model: this.#resolve(this.manifest.whisper.profiles[name].model) };
+  }
+
+  async #transcribeWithCli(buffer, selected) {
+    const requestDir = await fs.mkdtemp(path.join(this.tempDir, 'stt-'));
+    const inputPath = path.join(requestDir, 'input.wav');
+    const outputPrefix = path.join(requestDir, 'transcript');
+    try {
+      await fs.writeFile(inputPath, buffer, { flag: 'wx', mode: 0o600 });
+      const args = ['-m', selected.model, '-f', inputPath, '-l', 'pt', '-oj', '-of', outputPrefix, '-np', '-nt'];
+      const vad = this.#resolve(this.manifest.whisper.vadModel);
+      if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
+      await this.#run(this.#resolve(this.manifest.whisper.binary), args, { timeoutMs: STT_TIMEOUT_MS, kind: 'stt' });
+      return JSON.parse(await fs.readFile(`${outputPrefix}.json`, 'utf8'));
+    } finally {
+      await fs.rm(requestDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
     }
-    return null;
   }
 
-  async #runChatterbox({ textPath, outputPath, preset }) {
-    const python = this.#resolve(this.manifest.chatterbox.python);
-    const worker = path.join(this.root, 'scripts', 'voice', 'tts-worker.py');
-    const args = [worker, '--engine', 'chatterbox', '--text-file', textPath, '--output', outputPath, '--preset', preset, '--source', this.#resolve(this.manifest.chatterbox.source)];
-    await this.#run(python, args, {
-      timeoutMs: TTS_TIMEOUT_MS,
-      kind: 'tts',
-      env: { HF_HOME: this.#resolve(this.manifest.chatterbox.hfHome), HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' }
+  async #transcribeWithServer(buffer, selected) {
+    const server = await this.#ensureWhisperServer(selected);
+    const form = new FormData();
+    form.append('file', new Blob([buffer], { type: 'audio/wav' }), 'speech.wav');
+    form.append('response_format', 'json');
+    form.append('language', 'pt');
+    form.append('temperature', '0.0');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
+    try {
+      const response = await this.fetchImpl(`http://127.0.0.1:${server.port}/inference`, {
+        method: 'POST', body: form, signal: controller.signal, redirect: 'error'
+      });
+      const raw = await response.text();
+      if (!response.ok) throw runtimeError(502, 'whisper_server_failed', `whisper-server respondeu ${response.status}: ${sanitizeEngineError(raw)}`);
+      if (raw.length > 2 * 1024 * 1024) throw runtimeError(502, 'whisper_server_response_too_large', 'whisper-server retornou dados demais.');
+      try { return JSON.parse(raw); }
+      catch { throw runtimeError(502, 'whisper_server_invalid_json', 'whisper-server retornou JSON inválido.'); }
+    } catch (error) {
+      if (error?.name === 'AbortError') throw runtimeError(504, 'whisper_server_timeout', 'whisper-server excedeu o tempo limite.');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #ensureWhisperServer(selected) {
+    if (this.whisperServer?.ready && this.whisperServer.profile === selected.name && this.whisperServer.model === selected.model) return this.whisperServer;
+    this.#stopWhisperServer();
+    const port = await availableLoopbackPort();
+    const binary = this.#resolve(this.manifest.whisper.serverBinary);
+    const args = ['-m', selected.model, '--host', '127.0.0.1', '--port', String(port), '-l', 'pt', '-nt', '-ng'];
+    const vad = this.#resolve(this.manifest.whisper.vadModel);
+    if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
+    const child = this.spawnImpl(binary, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(binary), env: process.env });
+    this.children.add(child);
+    const server = { child, port, profile: selected.name, model: selected.model, ready: false, stderr: '' };
+    this.whisperServer = server;
+    const collect = chunk => { server.stderr = `${server.stderr}${chunk.toString('utf8')}`.slice(-4_000); };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    child.once('exit', () => {
+      this.children.delete(child);
+      server.ready = false;
+      if (this.whisperServer === server) this.whisperServer = null;
     });
+    child.once('error', collect);
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode != null) throw runtimeError(503, 'whisper_server_start_failed', `whisper-server encerrou durante a inicialização. ${sanitizeEngineError(server.stderr)}`);
+      try {
+        await this.fetchImpl(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(800) });
+        server.ready = true;
+        return server;
+      } catch { await delay(100); }
+    }
+    this.#stopWhisperServer();
+    throw runtimeError(504, 'whisper_server_start_timeout', 'whisper-server não ficou pronto dentro do limite.');
   }
 
-  async #runPiper({ textPath, outputPath }) {
-    const python = this.#resolve(this.manifest.piper.python);
-    const args = ['-m', 'piper', '-m', this.#resolve(this.manifest.piper.model), '-f', outputPath, '--input-file', textPath];
-    await this.#run(python, args, { timeoutMs: TTS_TIMEOUT_MS, kind: 'tts' });
+  #stopWhisperServer() {
+    const server = this.whisperServer;
+    this.whisperServer = null;
+    if (!server?.child) return;
+    server.ready = false;
+    try { server.child.kill('SIGTERM'); } catch { /* já encerrado */ }
+  }
+
+  async #ttsWorker(engine) {
+    const current = this.ttsWorkers.get(engine);
+    if (current?.ready) return current;
+    const script = path.join(this.root, 'scripts', 'voice', 'tts-server.py');
+    let command;
+    let args;
+    let env = {};
+    if (engine === 'kokoro') {
+      command = this.#resolve(this.manifest.kokoro.python);
+      args = [script, '--engine', 'kokoro', '--model', this.#resolve(this.manifest.kokoro.model), '--config', this.#resolve(this.manifest.kokoro.config), '--voices', this.#resolve(this.manifest.kokoro.voices)];
+      env = { HF_HOME: this.#resolve('hf-cache'), HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' };
+    } else if (engine === 'chatterbox') {
+      command = this.#resolve(this.manifest.chatterbox.python);
+      args = [script, '--engine', 'chatterbox', '--source', this.#resolve(this.manifest.chatterbox.source)];
+      env = { HF_HOME: this.#resolve(this.manifest.chatterbox.hfHome), HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' };
+    } else {
+      command = this.#resolve(this.manifest.piper.python);
+      args = [script, '--engine', 'piper', '--model', this.#resolve(this.manifest.piper.model), '--config', this.#resolve(this.manifest.piper.config)];
+    }
+    const worker = new PersistentJsonWorker({
+      command,
+      args,
+      env,
+      spawnImpl: this.spawnImpl,
+      onSpawn: child => this.children.add(child),
+      onExit: child => this.children.delete(child)
+    });
+    this.ttsWorkers.set(engine, worker);
+    try {
+      await worker.start(TTS_TIMEOUT_MS);
+      return worker;
+    } catch (error) {
+      this.ttsWorkers.delete(engine);
+      worker.close();
+      throw runtimeError(503, `${engine}_worker_start_failed`, `Não foi possível iniciar ${engine}: ${sanitizeEngineError(error.message)}`);
+    }
   }
 
   #run(command, args, { timeoutMs, kind, env = {} }) {
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
+      const child = this.spawnImpl(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
       this.children.add(child);
       let settled = false;
       let outputBytes = 0;
@@ -265,6 +390,7 @@ function defaultManifest() {
     whisper: {
       version: '1.8.6',
       binary: process.platform === 'win32' ? 'bin/whisper-cli.exe' : 'bin/whisper-cli',
+      serverBinary: process.platform === 'win32' ? 'bin/whisper-server.exe' : 'bin/whisper-server',
       vadModel: 'models/whisper/ggml-silero-v6.2.0.bin',
       profiles: {
         rapid: { model: 'models/whisper/ggml-base-q5_1.bin', downloadBytes: 59700000 },
@@ -273,6 +399,7 @@ function defaultManifest() {
       }
     },
     chatterbox: { version: 'v3-pt-br', python: process.platform === 'win32' ? 'venv-chatterbox/Scripts/python.exe' : 'venv-chatterbox/bin/python', model: 'ResembleAI/Chatterbox-Multilingual-pt-br', source: 'chatterbox-space/chatterbox/src', readyMarker: 'chatterbox.ready', hfHome: 'hf-cache' },
+    kokoro: { version: '1.0', python: process.platform === 'win32' ? 'venv-kokoro/Scripts/python.exe' : 'venv-kokoro/bin/python', modelId: 'hexgrad/Kokoro-82M', model: 'models/kokoro/kokoro-v1_0.pth', config: 'models/kokoro/config.json', voices: 'models/kokoro/voices', voiceNames: ['pf_dora', 'pm_alex', 'pm_santa'] },
     piper: { version: '1.4.2', python: process.platform === 'win32' ? 'venv-piper/Scripts/python.exe' : 'venv-piper/bin/python', voice: 'pt_BR-cadu-medium', model: 'models/piper/pt_BR-cadu-medium.onnx', config: 'models/piper/pt_BR-cadu-medium.onnx.json' }
   };
 }
@@ -281,13 +408,13 @@ function normalizeManifest(value) {
   const defaults = defaultManifest();
   if (!value || value.schemaVersion !== 1) return defaults;
   const result = structuredClone(defaults);
-  for (const section of ['whisper', 'chatterbox', 'piper']) if (value[section] && typeof value[section] === 'object') Object.assign(result[section], value[section]);
+  for (const section of ['whisper', 'chatterbox', 'kokoro', 'piper']) if (value[section] && typeof value[section] === 'object') Object.assign(result[section], value[section]);
   if (value.whisper?.profiles) result.whisper.profiles = { ...defaults.whisper.profiles, ...value.whisper.profiles };
   return result;
 }
 
 function emptyStatus() {
-  return { available: false, localOnly: true, storesRawAudio: false, stt: { whisper: { available: false, profiles: {} } }, tts: { chatterbox: { available: false }, piper: { available: false } } };
+  return { available: false, localOnly: true, storesRawAudio: false, stt: { whisper: { available: false, profiles: {} } }, tts: { kokoro: { available: false }, chatterbox: { available: false }, piper: { available: false } } };
 }
 
 function whisperText(payload) {
@@ -308,7 +435,7 @@ function sanitizeEngineError(value) {
 }
 
 function voiceMetricTitle(name) {
-  return ({ 'voice.vad_start': 'Fala detectada', 'voice.vad_end': 'Fim da fala', 'voice.stt_start': 'Transcrição iniciada', 'voice.stt_final': 'Transcrição concluída', 'voice.chat_start': 'Turno de voz enviado', 'voice.first_text': 'Primeiro texto recebido', 'voice.tts_start': 'Síntese iniciada', 'voice.first_audio': 'Primeiro áudio reproduzido', 'voice.tts_end': 'Síntese concluída', 'voice.barge_in': 'Interrupção humana', 'voice.feedback_ignored': 'Retorno acústico ignorado' })[name] || 'Métrica de voz';
+  return ({ 'voice.vad_start': 'Fala detectada', 'voice.vad_end': 'Fim da fala', 'voice.stt_start': 'Transcrição iniciada', 'voice.stt_empty': 'Nenhuma fala transcrita', 'voice.stt_final': 'Transcrição concluída', 'voice.chat_start': 'Turno de voz enviado', 'voice.first_text': 'Primeiro texto recebido', 'voice.tts_prepare_start': 'Preparação de áudio iniciada', 'voice.tts_start': 'Síntese iniciada', 'voice.first_audio': 'Primeiro áudio reproduzido', 'voice.tts_end': 'Síntese concluída', 'voice.barge_in': 'Interrupção humana', 'voice.feedback_ignored': 'Retorno acústico ignorado' })[name] || 'Métrica de voz';
 }
 
 async function isFile(target) {
@@ -317,6 +444,142 @@ async function isFile(target) {
 
 async function isDirectory(target) {
   try { return (await fs.stat(target)).isDirectory(); } catch { return false; }
+}
+
+async function hasKokoroVoices(directory) {
+  return (await Promise.all(['pf_dora.pt', 'pm_alex.pt', 'pm_santa.pt'].map(name => isFile(path.join(directory, name))))).every(Boolean);
+}
+
+function clamp(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function availableLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close(error => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+class PersistentJsonWorker {
+  constructor({ command, args, env = {}, spawnImpl = spawn, onSpawn = () => {}, onExit = () => {} }) {
+    this.command = command;
+    this.args = args;
+    this.env = env;
+    this.spawnImpl = spawnImpl;
+    this.onSpawn = onSpawn;
+    this.onExit = onExit;
+    this.child = null;
+    this.ready = false;
+    this.startPromise = null;
+    this.pending = new Map();
+    this.counter = 0;
+    this.stdout = '';
+    this.stderr = '';
+  }
+
+  start(timeoutMs) {
+    if (this.ready) return Promise.resolve(this);
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = new Promise((resolve, reject) => {
+      const child = this.spawnImpl(this.command, this.args, {
+        shell: false,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...this.env }
+      });
+      this.child = child;
+      this.onSpawn(child);
+      const timer = setTimeout(() => {
+        reject(new Error('O worker TTS excedeu o tempo de inicialização.'));
+        this.close();
+      }, timeoutMs);
+      const finishStart = (error = null) => {
+        clearTimeout(timer);
+        if (error) reject(error);
+        else { this.ready = true; resolve(this); }
+      };
+      child.stdout.on('data', chunk => {
+        this.stdout += chunk.toString('utf8');
+        if (this.stdout.length > 2 * 1024 * 1024) return this.close();
+        let lineEnd;
+        while ((lineEnd = this.stdout.indexOf('\n')) >= 0) {
+          const line = this.stdout.slice(0, lineEnd).trim();
+          this.stdout = this.stdout.slice(lineEnd + 1);
+          if (!line) continue;
+          let message;
+          try { message = JSON.parse(line); } catch { continue; }
+          if (message.type === 'ready') {
+            finishStart();
+            continue;
+          }
+          const entry = this.pending.get(String(message.id || ''));
+          if (!entry) continue;
+          this.pending.delete(String(message.id));
+          clearTimeout(entry.timer);
+          if (message.ok === true) entry.resolve(message);
+          else entry.reject(new Error(sanitizeEngineError(message.error || 'O worker TTS falhou.')));
+        }
+      });
+      child.stderr.on('data', chunk => { this.stderr = `${this.stderr}${chunk.toString('utf8')}`.slice(-8_000); });
+      child.once('error', error => finishStart(error));
+      child.once('exit', (code, signal) => {
+        this.onExit(child);
+        this.ready = false;
+        this.child = null;
+        this.startPromise = null;
+        const error = new Error(`Worker TTS encerrado (${signal || code}). ${sanitizeEngineError(this.stderr)}`);
+        finishStart(error);
+        for (const entry of this.pending.values()) {
+          clearTimeout(entry.timer);
+          entry.reject(error);
+        }
+        this.pending.clear();
+      });
+    });
+    return this.startPromise;
+  }
+
+  async request(payload, timeoutMs) {
+    await this.start(timeoutMs);
+    if (!this.child?.stdin?.writable) throw new Error('Worker TTS não está disponível.');
+    const id = `${process.pid}-${Date.now()}-${++this.counter}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('O worker TTS excedeu o tempo limite.'));
+        this.close();
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.child.stdin.write(`${JSON.stringify({ id, ...payload })}\n`, error => {
+        if (!error) return;
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      });
+    });
+  }
+
+  close() {
+    const child = this.child;
+    this.child = null;
+    this.ready = false;
+    this.startPromise = null;
+    if (!child) return;
+    try { child.stdin.end(); } catch { /* já encerrado */ }
+    try { child.kill('SIGTERM'); } catch { /* já encerrado */ }
+  }
 }
 
 function runtimeError(status, code, message) {

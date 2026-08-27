@@ -33,6 +33,7 @@
 }
 
 .genesis-voice-control{position:relative;display:inline-flex;align-items:center;gap:6px}
+.composer-submit-actions{display:flex;align-items:center;gap:7px;flex:0 0 auto}
 .genesis-voice-button{position:relative;width:36px;height:36px;border:1px solid var(--border,rgba(145,158,190,.18));border-radius:11px;background:rgba(255,255,255,.035);color:inherit;display:grid;place-items:center;cursor:pointer;transition:.18s ease}
 .genesis-voice-button:hover{transform:translateY(-1px);border-color:rgba(139,92,246,.48);background:rgba(139,92,246,.09)}
 .genesis-voice-button svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
@@ -456,8 +457,6 @@ kbd { font-family: inherit; font-size: 9px; color: var(--muted); border: 1px sol
 .attachment-menu-icon { width: 31px; height: 31px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 8px; background: var(--violet-soft); color: var(--violet-bright); }.attachment-menu-icon svg { width: 16px; }
 .attachment-menu button > span:last-child { display: flex; flex-direction: column; gap: 3px; }.attachment-menu strong { font-size: 9px; }.attachment-menu small { color: var(--muted); font-size: 7px; }
 .attachment-menu-note { margin: 3px 4px 1px; padding: 7px 6px 2px; border-top: 1px solid var(--line); color: var(--muted); font-size: 7px; }
-.memory-pill { display: inline-flex; align-items: center; gap: 5px; color: var(--muted-strong); }
-.memory-pill svg { width: 13px; color: var(--violet-bright); }
 .token-hint { padding-left: 9px; border-left: 1px solid var(--line); }
 .send-button { height: 34px; min-width: 80px; padding: 0 11px 0 13px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid rgba(166,138,255,.45); border-radius: 10px; background: linear-gradient(135deg, #7c5ce4, #6a4bcf); color: #fff; font-size: 10px; font-weight: 700; cursor: pointer; transition: var(--transition); box-shadow: 0 7px 19px rgba(93,65,183,.25); }
 .send-button:hover { transform: translateY(-1px); filter: brightness(1.08); }

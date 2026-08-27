@@ -21,6 +21,23 @@ test('sentence chunking aguarda fronteira estável e preserva resto', () => {
   assert.deepEqual(final.chunks, ['Segunda ainda']);
 });
 
+test('normalização pt-BR torna datas, horas, versões e unidades pronunciáveis', () => {
+  const spoken = normalizeSpokenText('Em 26/08/2026 às 12:30, a versão v2.3.1 marcou 29,4 °C e 68%. API pt-BR pronta.');
+  assert.match(spoken, /26 de agosto de 2026/);
+  assert.match(spoken, /12 horas e 30 minutos/);
+  assert.match(spoken, /versão 2 ponto 3 ponto 1/);
+  assert.match(spoken, /29,4 graus Celsius/);
+  assert.match(spoken, /68 por cento/);
+  assert.match(spoken, /A P I português do Brasil/);
+});
+
+test('chunks longos são quebrados em pausas sem exceder o teto', () => {
+  const input = `${'Primeira cláusula com conteúdo, '.repeat(12)}final.`;
+  const { chunks } = takeStableSentences(input, { flush: true, maxChunk: 120 });
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every(chunk => chunk.length <= 120));
+});
+
 test('similaridade identifica provável retorno acústico', () => {
   assert.ok(similarityToPlayback('Genesis encontrou três causas possíveis', 'O Genesis encontrou três causas possíveis para o problema.') > 0.7);
   assert.ok(similarityToPlayback('quero fazer outra pergunta', 'O Genesis encontrou três causas possíveis.') < 0.3);

@@ -38,6 +38,8 @@ test('métricas aceitam somente marcos sem texto ou áudio', async () => {
   const runtime = await new VoiceRuntime({ root, dataDir: path.join(root, '.genesis'), telemetry: { emit: event => emitted.push(event) } }).init();
   assert.deepEqual(runtime.recordMetric({ name: 'voice.vad_start', detail: { engine: 'local', transcript: 'não registrar' } }), { ok: true });
   assert.equal(emitted[0].meta.transcript, undefined);
+  assert.deepEqual(runtime.recordMetric({ name: 'voice.stt_empty', detail: { engine: 'whisper' } }), { ok: true });
+  assert.equal(emitted[1].title, 'Nenhuma fala transcrita');
   assert.throws(() => runtime.recordMetric({ name: 'voice.raw_audio' }), error => error.code === 'invalid_voice_metric');
   await runtime.flush();
   await fs.rm(root, { recursive: true, force: true });
