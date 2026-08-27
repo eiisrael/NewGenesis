@@ -132,7 +132,7 @@ function compactFingerprint(value) {
   return `${text.length}:${(hash >>> 0).toString(16)}`;
 }
 
-function contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage, supremeMind }) {
+function contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage, supremeMind, turnContext }) {
   const supremeInfo = supremeMind?.getProjectInfo?.() || null;
   return [
     interfaceLanguage,
@@ -140,6 +140,7 @@ function contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage
     projectContext?.projectUpdatedAt || '',
     compactFingerprint(projectContext?.text),
     compactFingerprint(userMemoryContext),
+    compactFingerprint(turnContext),
     supremeInfo?.projectRoot || '',
     supremeInfo?.generatedAt || ''
   ].join('|');
@@ -366,7 +367,7 @@ export class ContextEngine {
     if (this.telemetry && timer) this.telemetry.stopTimer(timer, meta);
   }
 
-  async build({ conversation, query, contextWindow = 32768, mode = 'balanced', budgetScale = 1, projectContext = null, userMemoryContext = '', interfaceLanguage = 'pt-BR', supremeMind = null }) {
+  async build({ conversation, query, contextWindow = 32768, mode = 'balanced', budgetScale = 1, projectContext = null, userMemoryContext = '', interfaceLanguage = 'pt-BR', supremeMind = null, turnContext = '' }) {
     const buildTimer = this._startTimer('contextEngine.build');
     
     // Detectar intenção e obter budget
@@ -406,7 +407,8 @@ export class ContextEngine {
       ? 'INTERFACE LANGUAGE: English (United States). Reply in English unless the user explicitly requests another language.'
       : 'IDIOMA DA INTERFACE: Português do Brasil. Responda em português, salvo se o usuário pedir explicitamente outro idioma.';
     const conversationTitle = compactText(conversation.title || 'Nova conversa', 240);
-    const system = `${GENESIS_SYSTEM_PROMPT}\n\n${languageInstruction}\n\nConversa: ${conversationTitle}\nModo atual: ${mode}.${adaptiveContext ? `\n\n${adaptiveContext}` : ''}${projectText ? `\n\n${projectText}` : ''}${smProjectText}`;
+    const safeTurnContext = compactRawText(String(turnContext || '').trim(), 1_200);
+    const system = `${GENESIS_SYSTEM_PROMPT}\n\n${languageInstruction}\n\nConversa: ${conversationTitle}\nModo atual: ${mode}.${safeTurnContext ? `\n\n${safeTurnContext}` : ''}${adaptiveContext ? `\n\n${adaptiveContext}` : ''}${projectText ? `\n\n${projectText}` : ''}${smProjectText}`;
     const systemCost = estimateTokens(system);
     let remaining = Math.max(400, Math.min(inputBudget * intentBudget.conversation, inputBudget - systemCost));
 
@@ -497,14 +499,14 @@ export class ContextEngine {
       },
       cacheKey: {
         contextWindow, mode, budgetScale, query,
-        sourceKey: contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage, supremeMind: sm })
+        sourceKey: contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage, supremeMind: sm, turnContext: safeTurnContext })
       }
     };
   }
 
-  async buildIncremental({ conversation, query, contextWindow = 32768, mode = 'balanced', budgetScale = 1, projectContext = null, userMemoryContext = '', interfaceLanguage = 'pt-BR', supremeMind = null, previousContext = null }) {
+  async buildIncremental({ conversation, query, contextWindow = 32768, mode = 'balanced', budgetScale = 1, projectContext = null, userMemoryContext = '', interfaceLanguage = 'pt-BR', supremeMind = null, turnContext = '', previousContext = null }) {
     if (!previousContext) {
-      return this.build({ conversation, query, contextWindow, mode, budgetScale, projectContext, userMemoryContext, interfaceLanguage, supremeMind });
+      return this.build({ conversation, query, contextWindow, mode, budgetScale, projectContext, userMemoryContext, interfaceLanguage, supremeMind, turnContext });
     }
 
     const allMessages = conversation.messages.filter(message => ['user', 'assistant'].includes(message.role));
@@ -515,7 +517,7 @@ export class ContextEngine {
       && previousContext.cacheKey?.mode === mode
       && previousContext.cacheKey?.budgetScale === budgetScale
       && previousContext.cacheKey?.query === query
-      && previousContext.cacheKey?.sourceKey === contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage, supremeMind });
+      && previousContext.cacheKey?.sourceKey === contextSourceKey({ projectContext, userMemoryContext, interfaceLanguage, supremeMind, turnContext });
 
     if (!hasNewMessages && sameShape && previousContext.estimatedTokens > 0) {
       return {
@@ -529,7 +531,7 @@ export class ContextEngine {
       };
     }
 
-    const result = await this.build({ conversation, query, contextWindow, mode, budgetScale, projectContext, userMemoryContext, interfaceLanguage, supremeMind });
+    const result = await this.build({ conversation, query, contextWindow, mode, budgetScale, projectContext, userMemoryContext, interfaceLanguage, supremeMind, turnContext });
     result.reused = false;
     result.previousMessageCount = previousContext.totalMessages;
     result.newMessageCount = newMessages.length;

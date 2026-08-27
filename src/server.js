@@ -22,6 +22,15 @@ import { createTaskContract } from './core/task-contract.js';
 import { TaskLedgerStore } from './core/task-ledger.js';
 import { createRuntimeShutdown } from './runtime-lifecycle.js';
 import { VoiceRuntime } from './voice/voice-runtime.js';
+import {
+  LOCAL_CONTEXT_CAPABILITIES,
+  WeatherService,
+  extractRequestedPlace,
+  formatTurnContext,
+  resolveLocalContextResponse,
+  sanitizeClientContext,
+  sanitizeInputMetadata
+} from './local-context.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CHAT_BODY_BYTES = 24 * 1024 * 1024;
@@ -536,7 +545,7 @@ async function serveStatic(response, staticRoot, pathname) {
   }
 }
 
-export function createHandler({ config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger, voiceRuntime = null, onShutdown = null }) {
+export function createHandler({ config, store, orchestrator, telemetry, settings, attachmentStore, projectStore, permissionStore, approvalManager, projectTools, userMemory, supremeMind, taskLedger, voiceRuntime = null, weatherService = new WeatherService(), onShutdown = null }) {
   const activeConversations = new Set();
   const activeControllers = new Set();
   const activeStreams = new Set();
@@ -575,7 +584,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
         return sendJson(response, 200, voiceRuntime ? await voiceRuntime.refreshStatus() : {
           available: false, localOnly: true, storesRawAudio: false,
           stt: { whisper: { available: false, profiles: {} } },
-          tts: { chatterbox: { available: false }, piper: { available: false } }
+          tts: { kokoro: { available: false }, chatterbox: { available: false }, piper: { available: false } }
         });
       }
 
@@ -604,10 +613,26 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
           'content-length': result.audio.length,
           'cache-control': 'no-store',
           'x-genesis-voice-engine': result.engine,
+          'x-genesis-voice-process-mode': result.processMode,
           'x-genesis-voice-latency-ms': String(result.latencyMs)
         });
         response.end(result.audio);
         return;
+      }
+
+      if (url.pathname === '/api/context/capabilities' && request.method === 'GET') {
+        return sendJson(response, 200, {
+          ...LOCAL_CONTEXT_CAPABILITIES,
+          generatedAt: new Date().toISOString()
+        });
+      }
+
+      if (url.pathname === '/api/context/weather' && request.method === 'POST') {
+        assertTrustedMutation(request);
+        const body = await readJson(request, 8 * 1024);
+        const place = String(body.place || '').trim();
+        if (place.length < 2 || place.length > 100) return sendJson(response, 400, { error: { code: 'invalid_place', message: 'Informe cidade e estado ou país.' } });
+        return sendJson(response, 200, await weatherService.currentForPlace(place));
       }
 
       if (url.pathname === '/api/runtime/shutdown' && request.method === 'POST') {
@@ -1236,6 +1261,8 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
           const content = String(body.content || '').trim() || (hasAttachments ? 'Analise os arquivos anexados e apresente os pontos relevantes.' : '');
           const mode = normalizeMode(body.mode || conversation.mode);
           const interfaceLanguage = body.language === 'en-US' ? 'en-US' : 'pt-BR';
+          const inputMetadata = sanitizeInputMetadata(body.inputMetadata);
+          const clientContext = sanitizeClientContext(body.clientContext);
           const taskContract = createTaskContract(content, { project: projectStore.summary(), mode });
           if (!content || content.length > config.maxMessageCharacters) return sendJson(response, 400, { error: { code: 'invalid_message', message: `A mensagem deve ter entre 1 e ${config.maxMessageCharacters.toLocaleString('pt-BR')} caracteres.` } });
           const submittedAttachmentNames = Array.isArray(submittedAttachments) ? submittedAttachments.map(item => item?.name).join(' ') : '';
@@ -1249,6 +1276,16 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
             });
             return sendJson(response, 422, { error: { code: 'adult_content_blocked', message: ADULT_CONTENT_MESSAGE } });
           }
+          const localContextResponse = await resolveLocalContextResponse({
+            query: content,
+            clientContext,
+            language: interfaceLanguage,
+            weatherService,
+            fallbackPlace: [...conversation.messages].reverse()
+              .filter(message => message.role === 'user')
+              .map(message => extractRequestedPlace(message.content))
+              .find(Boolean) || null
+          });
 
           activeConversations.add(id);
           const generationController = new AbortController();
@@ -1266,7 +1303,8 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               const messageMeta = {
                 tokenEstimate: estimateMessageTokens({ content, attachments: editedMessage.attachments || [] }),
                 tokenAccuracy: 'estimated',
-                task: taskContract
+                task: taskContract,
+                ...(inputMetadata.inputMode === 'voice' ? { input: inputMetadata } : {})
               };
               const edited = await store.editUserMessage(id, editMessageId, { content, mode, meta: messageMeta });
               orchestrator.invalidateContext?.(id);
@@ -1279,7 +1317,8 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               const messageMeta = {
                 tokenEstimate: estimateMessageTokens({ content, attachments }),
                 tokenAccuracy: 'estimated',
-                task: taskContract
+                task: taskContract,
+                ...(inputMetadata.inputMode === 'voice' ? { input: inputMetadata } : {})
               };
               userMessage = await store.addMessage(id, { role: 'user', content, mode, attachments, meta: messageMeta });
               messagePersisted = true;
@@ -1336,10 +1375,11 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               supremeMind: activeSupremeMind,
               userMemoryContext: await userMemory.context(content),
               interfaceLanguage,
+              turnContext: formatTurnContext(inputMetadata),
               taskContract,
-              localResponse: taskContract.toolPolicy.strategy === 'local_project_profile'
+              localResponse: localContextResponse || (taskContract.toolPolicy.strategy === 'local_project_profile'
                 ? projectStore.localReport(taskContract.outputFormat)
-                : '',
+                : ''),
               tools: projectToolDefinitionsFor(taskContract, { writable: projectStore.summary()?.writable === true }),
               toolExecutor: async (toolCall, options) => {
                 const toolResult = await projectTools.execute(toolCall, {

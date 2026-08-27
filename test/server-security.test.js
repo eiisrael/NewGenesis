@@ -88,3 +88,36 @@ test('endpoint de shutdown exige a barreira da UI e agenda o lifecycle local', a
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(requested, true);
 });
+
+test('contexto local expõe capacidades e clima somente pela barreira local', async t => {
+  const calls = [];
+  const handler = createHandler({
+    config: { root: path.resolve(import.meta.dirname, '..'), version: 'test' },
+    orchestrator: { provider: () => null },
+    telemetry: { emit() {} },
+    approvalManager: { cancelConversation() {} },
+    weatherService: { currentForPlace: async place => { calls.push(place); return { source: { name: 'Open-Meteo' }, current: { temperature: 29 } }; } }
+  });
+  const server = http.createServer(handler);
+  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  t.after(() => new Promise(resolve => server.close(resolve)));
+
+  const capabilities = await fetch(`http://127.0.0.1:${port}/api/context/capabilities`).then(response => response.json());
+  assert.equal(capabilities.geolocation.available, false);
+  assert.equal(capabilities.geolocation.persisted, false);
+  assert.equal(capabilities.placeLookup.available, true);
+  assert.equal(capabilities.weather.source, 'Open-Meteo');
+
+  const denied = await fetch(`http://127.0.0.1:${port}/api/context/weather`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ place: 'Caruaru, PE' })
+  });
+  assert.equal(denied.status, 403);
+  const accepted = await fetch(`http://127.0.0.1:${port}/api/context/weather`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-genesis-client': 'web' },
+    body: JSON.stringify({ place: 'Caruaru, PE' })
+  });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(calls, ['Caruaru, PE']);
+});

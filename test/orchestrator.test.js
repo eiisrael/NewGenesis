@@ -55,6 +55,28 @@ function createOrchestrator(providers, imageProviders = null) {
   });
 }
 
+test('resposta determinística de contexto local não chama provedores', async () => {
+  const provider = new MockProvider('remote', () => { throw new Error('não deveria chamar a rede'); });
+  const events = [];
+  const result = await createOrchestrator([provider]).respond({
+    conversation,
+    mode: 'balanced',
+    localResponse: {
+      content: 'Agora são 12:30:45, no fuso America/Fortaleza.',
+      model: 'system-clock',
+      snapshot: { source: 'system-clock', timeZone: 'America/Fortaleza' }
+    },
+    onEvent: (event, payload) => events.push({ event, payload })
+  });
+
+  assert.equal(provider.calls.length, 0);
+  assert.equal(result.providerId, 'genesis-local');
+  assert.equal(result.model, 'system-clock');
+  assert.equal(result.usage.requestCount, 0);
+  assert.equal(result.context.localContext.timeZone, 'America/Fortaleza');
+  assert.ok(events.some(item => item.event === 'local_analysis'));
+});
+
 test('abre uma nova rodada automaticamente e preserva a mensagem quando as rotas estão ocupadas', async () => {
   const provider = new MockProvider('openrouter', call => {
     if (call === 1) throw new ProviderError('Cota temporária', {

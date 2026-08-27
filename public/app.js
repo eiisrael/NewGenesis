@@ -1,4 +1,5 @@
 const $ = selector => document.querySelector(selector);
+
 const $$ = selector => [...document.querySelectorAll(selector)];
 
 const icons = {
@@ -85,7 +86,6 @@ const UI_EN = {
   'Raciocínio': 'Reasoning',
   'Código': 'Code',
   'Rápido': 'Fast',
-  'Memória contínua': 'Continuous memory',
   'Contexto econômico ativo': 'Efficient context enabled',
   'Enviar': 'Send',
   'Parar': 'Stop',
@@ -2346,6 +2346,14 @@ async function sendMessage(prefill, options = {}) {
   const conversationId = state.current.id;
   const outgoingAttachments = editMessageId ? [] : [...state.pendingAttachments];
   const displayContent = content || 'Analise os arquivos anexados e apresente os pontos relevantes.';
+  const inputMetadata = options.inputMetadata?.inputMode === 'voice'
+    ? {
+        inputMode: 'voice',
+        sttEngine: ['local', 'browser'].includes(options.inputMetadata.sttEngine) ? options.inputMetadata.sttEngine : undefined,
+        conversationMode: options.inputMetadata.conversationMode === true,
+        responseWillBeSpoken: options.inputMetadata.responseWillBeSpoken === true
+      }
+    : { inputMode: 'text' };
   if (editMessageId) {
     const messageIndex = state.current.messages.findIndex(message => message.id === editMessageId);
     state.current.messages = state.current.messages.slice(0, messageIndex + 1);
@@ -2360,7 +2368,7 @@ async function sendMessage(prefill, options = {}) {
       content: displayContent,
       createdAt: new Date().toISOString(),
       attachments: outgoingAttachments.map(attachment => ({ ...attachment, temporary: true })),
-      meta: { tokenEstimate: Math.max(1, Math.ceil(displayContent.length / 4)) + 4 + outgoingAttachments.length * 700, tokenAccuracy: 'estimated' }
+      meta: { tokenEstimate: Math.max(1, Math.ceil(displayContent.length / 4)) + 4 + outgoingAttachments.length * 700, tokenAccuracy: 'estimated', ...(inputMetadata.inputMode === 'voice' ? { input: inputMetadata } : {}) }
     });
     if (state.current.messages.length === 1) state.current.title = displayContent.length > 54 ? `${displayContent.slice(0, 53)}…` : displayContent;
   }
@@ -2386,7 +2394,15 @@ async function sendMessage(prefill, options = {}) {
     const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-genesis-client': 'web' },
-      body: JSON.stringify({ content, mode: state.mode, language: state.language, attachments, editMessageId: editMessageId || undefined }),
+      body: JSON.stringify({
+        content,
+        mode: state.mode,
+        language: state.language,
+        attachments,
+        editMessageId: editMessageId || undefined,
+        inputMetadata,
+        clientContext: localClientContext()
+      }),
       signal: requestController.signal
     });
     if (response.ok) {
@@ -2456,6 +2472,10 @@ function applyTheme(theme) {
 }
 
 function bindEvents() {
+  document.addEventListener('genesis:voice-submit', event => {
+    if (state.sending || !event.detail?.transcript) return event.preventDefault();
+    sendMessage(event.detail.transcript, { source: 'voice', inputMetadata: event.detail.inputMetadata });
+  });
   $('#newChatButton').addEventListener('click', () => {
     if (state.sending) return toast('Pare a resposta atual antes de iniciar outra conversa.', 'warning');
     clearPendingAttachments();
@@ -2810,3 +2830,10 @@ async function bootstrap() {
 }
 
 bootstrap();
+
+function localClientContext() {
+  return {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    locale: document.documentElement.lang === 'en' ? 'en-US' : 'pt-BR'
+  };
+}

@@ -174,7 +174,12 @@ function compactMessagesForRequest(messages, tokenLimit) {
   return cloned;
 }
 
-function localProjectResult({ content, conversation, projectContext, taskContract, onEvent }) {
+function localGenesisResult({ localResponse, conversation, projectContext, taskContract, onEvent }) {
+  const descriptor = typeof localResponse === 'string'
+    ? { content: localResponse, model: 'project-profiler', message: 'O inventário foi analisado localmente, sem enviar conteúdo do projeto para uma API.' }
+    : localResponse;
+  const content = String(descriptor?.content || '');
+  const model = String(descriptor?.model || 'local-context').slice(0, 80);
   const usage = {
     inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, requestCount: 0,
     reportedRequests: 0, estimatedRequests: 0, unknownRequests: 0,
@@ -198,7 +203,8 @@ function localProjectResult({ content, conversation, projectContext, taskContrac
     totalRequestTokens: 0,
     requestCount: 0,
     usageAccuracy: 'local',
-    task: taskContract
+    task: taskContract,
+    ...(descriptor?.snapshot ? { localContext: descriptor.snapshot } : {})
   };
   const verification = verifyTaskOutcome({
     contract: taskContract,
@@ -208,23 +214,25 @@ function localProjectResult({ content, conversation, projectContext, taskContrac
   });
   context.verification = verification;
   onEvent('local_analysis', {
-    message: 'O inventário foi analisado localmente, sem enviar conteúdo do projeto para uma API.',
+    message: descriptor?.message || (model === 'project-profiler'
+      ? 'O inventário foi analisado localmente, sem enviar conteúdo do projeto para uma API.'
+      : 'O contexto local foi resolvido deterministicamente, sem consultar um modelo de linguagem.'),
     taskId: taskContract?.id,
     projectFiles: projectContext?.totalFiles || 0
   });
   onEvent('complete', {
-    providerId: 'genesis-local', provider: 'Genesis Local', model: 'project-profiler',
+    providerId: 'genesis-local', provider: 'Genesis Local', model,
     latencyMs: 0, usage, context, freeVerified: true
   });
   onEvent('verification', { taskId: taskContract?.id, verification });
   return {
     content,
-    model: 'project-profiler',
-    resolvedModel: 'project-profiler',
+    model,
+    resolvedModel: model,
     resolvedProvider: 'Genesis Local',
     providerId: 'genesis-local',
     provider: 'Genesis Local',
-    requestedModel: 'project-profiler',
+    requestedModel: model,
     latencyMs: 0,
     finishReason: 'stop',
     usage,
@@ -439,7 +447,7 @@ export class GenesisOrchestrator {
     return [...specific, ...(router ? [router] : [])].slice(0, this.maxRoutes);
   }
 
-  async respond({ conversation, mode, onEvent = () => {}, signal, projectContext = null, supremeMind = null, tools = [], toolExecutor = null, userMemoryContext = '', interfaceLanguage = 'pt-BR', taskContract = null, localResponse = '', _recoveryRound = 0, _attempts = [], _requestBudget = null, _usageLedger = null, _taskEvidence = [], _toolContinuityMessages = [], _deadlineAt = null }) {
+  async respond({ conversation, mode, onEvent = () => {}, signal, projectContext = null, supremeMind = null, tools = [], toolExecutor = null, userMemoryContext = '', interfaceLanguage = 'pt-BR', turnContext = '', taskContract = null, localResponse = '', _recoveryRound = 0, _attempts = [], _requestBudget = null, _usageLedger = null, _taskEvidence = [], _toolContinuityMessages = [], _deadlineAt = null }) {
     if (signal?.aborted) throw Object.assign(new Error('Solicitação interrompida pelo usuário.'), { code: 'request_cancelled', category: 'cancelled' });
     let normalizedMode = normalizeMode(mode);
     const latestUserMessage = [...conversation.messages].reverse().find(message => message.role === 'user');
@@ -451,8 +459,8 @@ export class GenesisOrchestrator {
     const intentBudget = getIntentBudget(intent);
     const intentLabel = getIntentLabel(intent);
     if (_recoveryRound === 0 && taskContract) onEvent('task_contract', { task: taskContract });
-    if (taskContract?.toolPolicy?.strategy === 'local_project_profile' && localResponse) {
-      return localProjectResult({ content: localResponse, conversation, projectContext, taskContract, onEvent });
+    if (localResponse) {
+      return localGenesisResult({ localResponse, conversation, projectContext, taskContract, onEvent });
     }
     const requirements = {
       image: attachments.some(attachment => attachment.kind === 'image'),
@@ -606,7 +614,7 @@ export class GenesisOrchestrator {
       await waitForRecovery(delayMs, signal);
       await this.refreshProviders();
       return this.respond({
-        conversation, mode: normalizedMode, onEvent, signal, projectContext, supremeMind, tools, toolExecutor, userMemoryContext, interfaceLanguage,
+        conversation, mode: normalizedMode, onEvent, signal, projectContext, supremeMind, tools, toolExecutor, userMemoryContext, interfaceLanguage, turnContext,
         taskContract, localResponse,
         _recoveryRound: _recoveryRound + 1, _attempts, _requestBudget: requestBudget, _usageLedger: usageLedger,
         _taskEvidence, _toolContinuityMessages: crossRouteToolMessages, _deadlineAt: deadlineAt
@@ -643,7 +651,7 @@ export class GenesisOrchestrator {
         if (previousContext) this.rememberContext(conversation.id, previousContext);
         const context = await this.contextEngine.buildIncremental({
           conversation, query, contextWindow: candidate.contextWindow,
-          mode: normalizedMode, budgetScale: scale, projectContext, userMemoryContext, interfaceLanguage,
+          mode: normalizedMode, budgetScale: scale, projectContext, userMemoryContext, interfaceLanguage, turnContext,
           supremeMind,
           previousContext: previousContext ? { ...previousContext, messageIds: previousContext.messageIds } : null
         });

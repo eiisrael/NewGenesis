@@ -50,6 +50,24 @@ test('a escolha de idioma da interface orienta a resposta sem alterar a conversa
   assert.equal(conversation.messages[0].content, 'Help me review this project.');
 });
 
+test('contexto confiável do turno de voz entra como sistema e invalida o cache ao mudar', async () => {
+  const conversation = { id: 'voice-context', title: 'Voz', messages: [message(1, 'user', 'Explique em voz alta.')] };
+  const engine = new ContextEngine({ inputTokenBudget: 3000, outputTokenBudget: 500 });
+  const first = await engine.build({
+    conversation, query: conversation.messages[0].content, contextWindow: 8192,
+    turnContext: 'CONTEXTO CONFIÁVEL DO TURNO: entrada por voz; resposta será falada.'
+  });
+  assert.match(first.messages[0].content, /CONTEXTO CONFIÁVEL DO TURNO/);
+  assert.match(first.messages[0].content, /resposta será falada/);
+  first.messageIds = conversation.messages.map(item => item.id);
+  const second = await engine.buildIncremental({
+    conversation, query: conversation.messages[0].content, contextWindow: 8192,
+    turnContext: 'CONTEXTO CONFIÁVEL DO TURNO: entrada por texto.', previousContext: first
+  });
+  assert.equal(second.reused, false);
+  assert.match(second.messages[0].content, /entrada por texto/);
+});
+
 test('monta conteúdo multimodal e injeta texto de anexos como dados não confiáveis', async () => {
   const messages = [{
     id: 'u-files', role: 'user', content: 'Compare os anexos.', attachments: [
