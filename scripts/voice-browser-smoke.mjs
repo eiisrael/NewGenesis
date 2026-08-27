@@ -116,7 +116,9 @@ async function withBrowser(executable, url, initScript, assertions) {
     const errors = [];
     cdp.on('Runtime.exceptionThrown', event => errors.push(event.exceptionDetails?.exception?.description || event.exceptionDetails?.text));
     cdp.on('Runtime.consoleAPICalled', event => { if (event.type === 'error') errors.push('console.error'); });
-    cdp.on('Log.entryAdded', event => { if (event.entry?.level === 'error') errors.push(event.entry.text); });
+    cdp.on('Log.entryAdded', event => {
+      if (event.entry?.level === 'error') errors.push(`${event.entry.text}${event.entry.url ? ` (${event.entry.url})` : ''}`);
+    });
     await cdp.call('Runtime.enable');
     await cdp.call('Page.enable');
     await cdp.call('Log.enable');
@@ -178,7 +180,15 @@ const supportedVoice = `
       available: true, localOnly: true, stt: { whisper: { available: false, profiles: {} } },
       tts: { kokoro: { available: true, voices: ['pf_dora', 'pm_alex', 'pm_santa'] }, piper: { available: false }, chatterbox: { available: false } }
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
-    if (pathname === '/api/voice/synthesize') return Promise.resolve(new Response(new Uint8Array(64), { status: 200, headers: { 'content-type': 'audio/wav' } }));
+    if (pathname === '/api/voice/synthesize') {
+      window.__genesisTtsRequests = (window.__genesisTtsRequests || 0) + 1;
+      if (window.__genesisTtsRequests <= 2) return Promise.resolve({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: { code: 'voice_tts_busy', message: 'O sintetizador local já está gerando outra fala.' } })
+      });
+      return Promise.resolve(new Response(new Uint8Array(64), { status: 200, headers: { 'content-type': 'audio/wav' } }));
+    }
     return originalFetch(input, init);
   };
 `;
@@ -290,6 +300,7 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
           firstState, thinkingState, speakingState, resumedState, interruptedState,
           submissions: window.__genesisVoiceSubmissions?.length || 0,
           submittedInputMode: window.__genesisVoiceSubmissions?.[0]?.inputMetadata?.inputMode,
+          ttsRetries: window.__genesisVoice.controller.diagnostics().metrics.filter(metric => metric.name === 'voice.tts_retry').length,
           ttsCancelled: (window.__genesisCancelCount || 0) > cancelBefore,
           finalComposer: document.querySelector('#messageInput').value,
           finalState: window.__genesisVoice.controller.machine.current
@@ -297,7 +308,7 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
       })()`);
       assert.deepEqual(conversation, {
         firstState: 'LISTENING', thinkingState: 'THINKING', speakingState: 'SPEAKING', resumedState: 'LISTENING',
-        interruptedState: 'SPEECH_DETECTED', submissions: 2, submittedInputMode: 'voice', ttsCancelled: true,
+        interruptedState: 'SPEECH_DETECTED', submissions: 2, submittedInputMode: 'voice', ttsRetries: 2, ttsCancelled: true,
         finalComposer: 'nova pergunta agora', finalState: 'IDLE'
       });
 

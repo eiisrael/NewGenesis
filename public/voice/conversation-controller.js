@@ -1,5 +1,5 @@
 import { VOICE_STATES, VoiceStateMachine } from './state-machine.js';
-import { normalizeSpokenText, similarityToPlayback, takeStableSentences } from './speech-normalizer.js';
+import { normalizeSpokenText, normalizeVoiceTranscript, similarityToPlayback, takeStableSentences } from './speech-normalizer.js';
 
 export class VoiceConversationController {
   constructor({ settings, inputEngines, playback, submitTranscript, onInterim, onState, onLevel, onStatus, onMetric } = {}) {
@@ -120,6 +120,9 @@ export class VoiceConversationController {
 
   onChatStart() {
     if ([VOICE_STATES.LISTENING, VOICE_STATES.SPEECH_DETECTED].includes(this.machine.current)) this.stopInput();
+    // A new response is a hard turn boundary: no prepared or queued audio from
+    // the previous answer may be allowed to cross it.
+    this.#cancelPlayback('new-chat-turn');
     this.chatFinished = false;
     this.chatBuffer = '';
     this.firstTextSeen = false;
@@ -247,7 +250,7 @@ export class VoiceConversationController {
   }
 
   #onTranscript(text, detail, { once, testOnly = false }) {
-    const transcript = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 12000);
+    const transcript = normalizeVoiceTranscript(String(text || '').replace(/\s+/g, ' ').trim()).slice(0, 12000);
     if (!transcript) return;
     if (once) this.#cancelPushToTalkRetry();
     if (this.bargeCandidate && transcript.split(/\s+/).length >= 3 && similarityToPlayback(transcript, this.playback.lastSpokenText) >= 0.72) {
@@ -385,6 +388,10 @@ export class VoiceConversationController {
       onPrepare: detail => {
         this.#transition(VOICE_STATES.SPEAKING, { engine: detail.engine, preparing: true });
         this.callbacks.onStatus?.('tts-preparing', detail);
+      },
+      onRetry: detail => {
+        this.mark('voice.tts_retry', { engine: detail.engine, attempt: detail.attempt, delayMs: detail.delayMs });
+        this.callbacks.onStatus?.('tts-waiting', detail);
       },
       onStart: detail => {
         this.mark('voice.tts_start', { engine: detail.engine });

@@ -1,6 +1,13 @@
 const CODE_NOTICE = 'Há um bloco de código na resposta.';
 const TABLE_NOTICE = 'Há uma tabela na resposta.';
 
+export function normalizeVoiceTranscript(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const continuation = text.match(/^continui([.!?…]*)$/iu);
+  if (!continuation) return text;
+  return `Continue${continuation[1] || '.'}`;
+}
+
 export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   let text = String(value || '').replace(/\r\n?/g, '\n');
   text = text.replace(/```[\s\S]*?```/g, `\n${CODE_NOTICE}\n`);

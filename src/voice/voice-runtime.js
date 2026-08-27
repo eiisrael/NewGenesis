@@ -164,11 +164,13 @@ export class VoiceRuntime {
   }
 
   recordMetric({ name, at, detail } = {}) {
-    const allowed = new Set(['voice.vad_start', 'voice.vad_end', 'voice.stt_start', 'voice.stt_empty', 'voice.stt_final', 'voice.chat_start', 'voice.first_text', 'voice.tts_prepare_start', 'voice.tts_start', 'voice.first_audio', 'voice.tts_end', 'voice.barge_in', 'voice.feedback_ignored']);
+    const allowed = new Set(['voice.vad_start', 'voice.vad_end', 'voice.stt_start', 'voice.stt_empty', 'voice.stt_final', 'voice.chat_start', 'voice.first_text', 'voice.tts_prepare_start', 'voice.tts_retry', 'voice.tts_start', 'voice.first_audio', 'voice.tts_end', 'voice.barge_in', 'voice.feedback_ignored']);
     if (!allowed.has(name)) throw runtimeError(400, 'invalid_voice_metric', 'Métrica de voz inválida.');
     const safeDetail = {};
     if (typeof detail?.engine === 'string') safeDetail.engine = detail.engine.slice(0, 30);
     if (Number.isFinite(Number(detail?.latencyMs))) safeDetail.latencyMs = Math.max(0, Math.min(300000, Math.round(detail.latencyMs)));
+    if (Number.isFinite(Number(detail?.attempt))) safeDetail.attempt = Math.max(1, Math.min(20, Math.round(detail.attempt)));
+    if (Number.isFinite(Number(detail?.delayMs))) safeDetail.delayMs = Math.max(0, Math.min(30000, Math.round(detail.delayMs)));
     this.telemetry?.emit({ category: 'voice', type: name, title: voiceMetricTitle(name), detail: 'Marco local de latência; nenhum áudio foi registrado.', meta: { clientAt: Number(at) || null, ...safeDetail } });
     return { ok: true };
   }
@@ -438,7 +440,7 @@ function sanitizeEngineError(value) {
 }
 
 function voiceMetricTitle(name) {
-  return ({ 'voice.vad_start': 'Fala detectada', 'voice.vad_end': 'Fim da fala', 'voice.stt_start': 'Transcrição iniciada', 'voice.stt_empty': 'Nenhuma fala transcrita', 'voice.stt_final': 'Transcrição concluída', 'voice.chat_start': 'Turno de voz enviado', 'voice.first_text': 'Primeiro texto recebido', 'voice.tts_prepare_start': 'Preparação de áudio iniciada', 'voice.tts_start': 'Síntese iniciada', 'voice.first_audio': 'Primeiro áudio reproduzido', 'voice.tts_end': 'Síntese concluída', 'voice.barge_in': 'Interrupção humana', 'voice.feedback_ignored': 'Retorno acústico ignorado' })[name] || 'Métrica de voz';
+  return ({ 'voice.vad_start': 'Fala detectada', 'voice.vad_end': 'Fim da fala', 'voice.stt_start': 'Transcrição iniciada', 'voice.stt_empty': 'Nenhuma fala transcrita', 'voice.stt_final': 'Transcrição concluída', 'voice.chat_start': 'Turno de voz enviado', 'voice.first_text': 'Primeiro texto recebido', 'voice.tts_prepare_start': 'Preparação de áudio iniciada', 'voice.tts_retry': 'Sintetizador ocupado; nova tentativa agendada', 'voice.tts_start': 'Síntese iniciada', 'voice.first_audio': 'Primeiro áudio reproduzido', 'voice.tts_end': 'Síntese concluída', 'voice.barge_in': 'Interrupção humana', 'voice.feedback_ignored': 'Retorno acústico ignorado' })[name] || 'Métrica de voz';
 }
 
 async function isFile(target) {

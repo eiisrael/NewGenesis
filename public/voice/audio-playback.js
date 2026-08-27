@@ -1,7 +1,8 @@
 export class AudioPlaybackController {
-  constructor({ kokoro, chatterbox, piper, onPrepare, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError } = {}) {
+  constructor({ kokoro, chatterbox, piper, onPrepare, onRetry, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError, busyRetryDelays } = {}) {
     this.engines = { kokoro, chatterbox, piper };
-    this.callbacks = { onPrepare, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError };
+    this.callbacks = { onPrepare, onRetry, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError };
+    this.busyRetryDelays = Array.isArray(busyRetryDelays) ? [...busyRetryDelays] : [250, 500, 1000, 1500, 2000, 2500, 3000];
     this.queue = [];
     this.running = false;
     this.generation = 0;
@@ -38,11 +39,11 @@ export class AudioPlaybackController {
       this.lastSpokenText = item.text;
       const selected = item.selected || selectEngine(item.settings, this.engines);
       if (!selected) {
-        this.callbacks.onError?.(voiceError('tts_unavailable', 'Nenhum engine de voz compatível está disponível.'));
-        break;
+        this.#failPlayback(voiceError('tts_unavailable', 'Nenhum engine de voz compatível está disponível.'));
+        return;
       }
       try {
-        const prepared = item.preparation ? await item.preparation : await this.#prepare(item, selected);
+        const prepared = item.preparation ? await item.preparation : await this.#prepare(item, selected, { generation });
         if (generation !== this.generation) break;
         this.callbacks.onStart?.({ engine: selected.name, text: item.text });
         this.#prime();
@@ -51,25 +52,26 @@ export class AudioPlaybackController {
       } catch (error) {
         if (generation !== this.generation || error?.name === 'AbortError') break;
         if (!shouldFallback(error)) {
-          this.callbacks.onError?.(error);
-          break;
+          this.#failPlayback(error);
+          return;
         }
         const fallback = selectFallbackEngine(item.settings, this.engines, selected.name);
         if (!fallback) {
-          this.callbacks.onError?.(error);
-          break;
+          this.#failPlayback(error);
+          return;
         }
         this.callbacks.onFallback?.({ from: selected.name, to: fallback.name, error });
         try {
-          const prepared = await this.#prepare(item, fallback, { replace: true });
+          const prepared = await this.#prepare(item, fallback, { replace: true, generation });
           if (generation !== this.generation) break;
           this.callbacks.onStart?.({ engine: fallback.name, text: item.text });
           this.#prime();
           await playSelected(fallback, item, prepared, () => this.callbacks.onFirstAudio?.({ engine: fallback.name }));
           if (generation === this.generation) this.callbacks.onEnd?.({ engine: fallback.name });
         } catch (fallbackError) {
-          this.callbacks.onError?.(fallbackError);
-          break;
+          if (generation !== this.generation || fallbackError?.name === 'AbortError') break;
+          this.#failPlayback(fallbackError);
+          return;
         }
       }
     }
@@ -86,18 +88,36 @@ export class AudioPlaybackController {
     const selected = selectEngine(next.settings, this.engines);
     if (!selected) return;
     next.selected = selected;
-    next.preparation = this.#prepare(next, selected);
+    next.preparation = this.#prepare(next, selected, { generation: this.generation });
     next.preparation.catch(() => {});
   }
 
-  #prepare(item, selected, { replace = false } = {}) {
+  async #prepare(item, selected, { replace = false, generation = this.generation } = {}) {
     if (replace) {
       item.selected = selected;
       item.preparation = null;
     }
     this.callbacks.onPrepare?.({ engine: selected.name, text: item.text });
-    if (typeof selected.engine.prepare !== 'function') return Promise.resolve(null);
-    return selected.engine.prepare(item.text, item.settings);
+    if (typeof selected.engine.prepare !== 'function') return null;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await selected.engine.prepare(item.text, item.settings);
+      } catch (error) {
+        const delayMs = this.busyRetryDelays[attempt];
+        if (error?.code !== 'voice_tts_busy' || delayMs == null || generation !== this.generation) throw error;
+        this.callbacks.onRetry?.({ engine: selected.name, text: item.text, attempt: attempt + 1, delayMs, error });
+        await waitForRetry(delayMs);
+        if (generation !== this.generation) throw new DOMException('Síntese cancelada.', 'AbortError');
+      }
+    }
+  }
+
+  #failPlayback(error) {
+    this.generation += 1;
+    this.queue = [];
+    this.running = false;
+    for (const engine of Object.values(this.engines)) engine?.cancel?.();
+    this.callbacks.onError?.(error);
   }
 }
 
@@ -136,4 +156,8 @@ function voiceError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function waitForRetry(delayMs) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(delayMs) || 0)));
 }

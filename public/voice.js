@@ -274,6 +274,7 @@ function renderStatus(status, detail) {
     'speech-detected': 'Fala detectada; continue falando.', transcribing: 'Transcrevendo localmente…', thinking: 'Mensagem enviada ao chat.',
     speaking: 'A resposta está sendo reproduzida. Você pode interromper falando.',
     'tts-preparing': 'Preparando a voz local. O primeiro teste pode levar alguns segundos.',
+    'tts-waiting': `Aguardando o sintetizador concluir o trecho anterior${detail?.attempt ? ` (tentativa ${detail.attempt})` : ''}…`,
     'tts-busy': 'A voz local já está sendo preparada. Aguarde a reprodução.',
     'microphone-ok': `Microfone funcionando via ${detail?.engine === 'local' ? 'Whisper local' : 'navegador'}. Reconhecido: “${detail?.transcript || ''}”`,
     'microphone-timeout': 'O microfone abriu, mas nenhuma fala foi detectada em 15 segundos. Verifique o dispositivo de entrada e o nível de volume do Windows.',

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AdaptiveVoiceActivityDetector, encodePcm16Wav, resampleLinear } from '../public/voice/audio-input.js';
-import { normalizeSpokenText, similarityToPlayback, takeStableSentences } from '../public/voice/speech-normalizer.js';
+import { normalizeSpokenText, normalizeVoiceTranscript, similarityToPlayback, takeStableSentences } from '../public/voice/speech-normalizer.js';
 import { inspectWave } from '../src/voice/voice-runtime.js';
 
 test('normalização altera somente a cópia falada e omite estruturas ruidosas', () => {
@@ -19,6 +19,12 @@ test('sentence chunking aguarda fronteira estável e preserva resto', () => {
   assert.equal(first.rest, 'Segunda ainda');
   const final = takeStableSentences(first.rest, { flush: true });
   assert.deepEqual(final.chunks, ['Segunda ainda']);
+});
+
+test('correção de comando atua somente na transcrição de voz isolada', () => {
+  assert.equal(normalizeVoiceTranscript('Continui.'), 'Continue.');
+  assert.equal(normalizeVoiceTranscript('continui'), 'Continue.');
+  assert.equal(normalizeVoiceTranscript('Explique por que continui apareceu.'), 'Explique por que continui apareceu.');
 });
 
 test('normalização pt-BR torna datas, horas, versões e unidades pronunciáveis', () => {

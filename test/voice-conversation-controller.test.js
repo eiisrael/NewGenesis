@@ -40,6 +40,45 @@ class PreparedTts {
   cancel() { while (this.resolvers.length) this.finish(); }
 }
 
+class BusyPreparedTts {
+  available = true;
+  attempts = 0;
+  played = [];
+  async prepare(text) {
+    this.attempts += 1;
+    if (this.attempts <= 2) {
+      const error = new Error('sintetizador ocupado');
+      error.code = 'voice_tts_busy';
+      throw error;
+    }
+    return { text };
+  }
+  async play(value, options) {
+    this.played.push(value.text);
+    options.onFirstAudio?.();
+  }
+  cancel() {}
+}
+
+class FailOncePreparedTts {
+  available = true;
+  attempts = 0;
+  prepared = [];
+  played = [];
+  async prepare(text) {
+    this.attempts += 1;
+    this.prepared.push(text);
+    if (this.attempts === 1) {
+      const error = new Error('saída indisponível');
+      error.code = 'audio_output_not_found';
+      throw error;
+    }
+    return { text };
+  }
+  async play(value) { this.played.push(value.text); }
+  cancel() {}
+}
+
 function tick() { return new Promise(resolve => setImmediate(resolve)); }
 
 function settings(overrides = {}) {
@@ -155,6 +194,64 @@ test('fila prepara no máximo o próximo trecho enquanto o atual toca', async ()
   await tick();
   tts.finish();
   await tick();
+});
+
+test('sintetizador ocupado é aguardado sem perder ou reordenar o trecho', async () => {
+  const tts = new BusyPreparedTts();
+  const retries = [];
+  const errors = [];
+  const playback = new AudioPlaybackController({
+    kokoro: tts,
+    busyRetryDelays: [0, 0],
+    onRetry: detail => retries.push(detail),
+    onError: error => errors.push(error)
+  });
+
+  playback.enqueue('Trecho preservado.', settings());
+  await new Promise(resolve => setTimeout(resolve, 20));
+
+  assert.equal(tts.attempts, 3);
+  assert.deepEqual(tts.played, ['Trecho preservado.']);
+  assert.equal(retries.length, 2);
+  assert.deepEqual(errors, []);
+});
+
+test('falha terminal descarta a sobra antiga antes de aceitar um novo turno', async () => {
+  const tts = new FailOncePreparedTts();
+  const errors = [];
+  const playback = new AudioPlaybackController({ kokoro: tts, onError: error => errors.push(error) });
+
+  playback.enqueue('Primeiro trecho antigo.', settings());
+  playback.enqueue('Sobra que não pode vazar.', settings());
+  await tick();
+  playback.enqueue('Resposta do turno novo.', settings());
+  await tick();
+
+  assert.equal(errors.length, 1);
+  assert.deepEqual(tts.played, ['Resposta do turno novo.']);
+  assert.equal(playback.queue.length, 0);
+});
+
+test('início de chat cancela áudio preparado da resposta anterior', async () => {
+  const input = new FakeInput();
+  const tts = new PreparedTts();
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  const controller = new VoiceConversationController({
+    settings: settings(), inputEngines: { local: { available: false }, browser: input }, playback
+  });
+
+  playback.enqueue('Trecho antigo em reprodução.', settings());
+  playback.enqueue('Sobra antiga na fila.', settings());
+  await tick();
+  controller.onChatStart();
+  controller.onChatDelta('Trecho exclusivo da resposta nova. ');
+  controller.onChatEnd();
+  await tick();
+  tts.finish();
+  await tick();
+
+  assert.doesNotMatch(tts.played.join(' '), /Sobra antiga/);
+  assert.match(tts.played.join(' '), /Trecho exclusivo/);
 });
 
 test('transcrição vazia é recuperável no modo conversa e volta a ouvir', async () => {
