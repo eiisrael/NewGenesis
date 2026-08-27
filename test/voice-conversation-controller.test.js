@@ -103,6 +103,28 @@ test('fila cai somente para outro engine local quando o selecionado falha', asyn
   assert.equal(fallbacks[0].to, 'piper');
 });
 
+test('falha da saída de áudio não tenta outro sintetizador no mesmo dispositivo', async () => {
+  const outputError = new Error('saída ausente');
+  outputError.code = 'audio_output_not_found';
+  const kokoro = new FakeTts();
+  kokoro.speak = () => Promise.reject(outputError);
+  const piper = new FakeTts();
+  const errors = [];
+  const fallbacks = [];
+  const playback = new AudioPlaybackController({
+    kokoro,
+    piper,
+    onError: error => errors.push(error),
+    onFallback: detail => fallbacks.push(detail)
+  });
+
+  playback.enqueue('Resposta curta.', settings());
+  await tick();
+  assert.deepEqual(piper.spoken, []);
+  assert.deepEqual(fallbacks, []);
+  assert.equal(errors[0], outputError);
+});
+
 test('preferência 100% local impede fallback silencioso de STT', async () => {
   const browser = new FakeInput();
   const playback = new AudioPlaybackController({ piper: new FakeTts() });
@@ -194,4 +216,49 @@ test('teste manual de TTS não tenta reabrir o microfone do modo conversa', asyn
   await tick();
   assert.equal(controller.machine.current, 'IDLE');
   assert.equal(input.starts.length, 0);
+});
+
+test('cliques repetidos no teste de voz não criam sínteses concorrentes', async () => {
+  const input = new FakeInput();
+  const tts = new FakeTts({ deferred: true });
+  const statuses = [];
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  const controller = new VoiceConversationController({
+    settings: settings({ conversationMode: false }),
+    inputEngines: { local: { available: false }, browser: input },
+    playback,
+    onStatus: status => statuses.push(status)
+  });
+
+  assert.equal(controller.speakText('Teste local.'), true);
+  assert.equal(controller.speakText('Teste local.'), false);
+  await tick();
+  assert.deepEqual(tts.spoken, ['Teste local.']);
+  assert.ok(statuses.includes('tts-busy'));
+  controller.stopAll('test-complete');
+});
+
+test('teste de microfone confirma a transcrição sem enviar mensagem ao chat', async () => {
+  const input = new FakeInput();
+  const submitted = [];
+  const statuses = [];
+  const playback = new AudioPlaybackController({ piper: new FakeTts() });
+  const controller = new VoiceConversationController({
+    settings: settings({ conversationMode: false }),
+    inputEngines: { local: { available: false }, browser: input },
+    playback,
+    submitTranscript: transcript => submitted.push(transcript),
+    onStatus: (status, detail) => statuses.push({ status, detail })
+  });
+
+  await controller.testMicrophone();
+  input.current().onSpeechStart({ engine: 'browser' });
+  input.current().onTranscribing({ engine: 'browser' });
+  input.current().onFinal('Genesis está me ouvindo?', { engine: 'browser' });
+  input.current().onEnd({ engine: 'browser', transcript: 'Genesis está me ouvindo?' });
+
+  assert.deepEqual(submitted, []);
+  assert.equal(controller.machine.current, 'IDLE');
+  assert.equal(statuses.at(-1).status, 'microphone-ok');
+  assert.equal(statuses.at(-1).detail.transcript, 'Genesis está me ouvindo?');
 });

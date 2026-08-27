@@ -29,6 +29,8 @@ Kokoro é a primeira opção automática por ter vozes oficiais pt-BR e licença
 
 O worker JSONL força UTF-8 na entrada e na saída. Isso é obrigatório no Windows: herdar uma página de código legada corrompe acentos antes do G2P (por exemplo, `você` pode virar mojibake e produzir nomes audíveis de símbolos). A voz é carregada antes da semente determinística do Kokoro, tornando a primeira síntese equivalente às seguintes. O WAV final remove somente silêncio externo, preserva até 15 ms no início e 55 ms no fim e usa 40 ms entre chunks internos.
 
+O `AudioContext` é criado e retomado durante a interação do usuário, antes da espera pela síntese fria. O controlador rejeita cliques manuais concorrentes e não usa outro sintetizador para mascarar falhas de saída de áudio. A captura descarta streams cujo track já terminou e solicita novamente o dispositivo, inclusive com constraints básicas quando o navegador rejeita as preferenciais.
+
 O binário Windows oficial instalado do whisper.cpp é CPU. A Radeon RX 460 anunciar Vulkan não prova aceleração do Whisper; o upstream exige build `GGML_VULKAN=ON`, e não havia toolchain auditado nem binário oficial equivalente nesta validação. CPU continua sendo o baseline suportado.
 
 ## Contexto local

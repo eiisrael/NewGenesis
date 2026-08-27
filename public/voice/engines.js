@@ -138,8 +138,16 @@ export class LocalTextToSpeechEngine {
 
   setAvailable(available) { this.serverAvailable = available === true; }
 
+  async unlock() {
+    if (!this.available) return false;
+    await this.#ensureAudioContext();
+    return this.context?.state === 'running';
+  }
+
   async prepare(text, options = {}) {
     if (!this.available) throw engineError(`${this.engine}_unavailable`, `${this.engine} não está instalado ou configurado.`);
+    // Preserve the user gesture before a cold local synthesis consumes it.
+    const contextReady = this.#ensureAudioContext();
     const controller = new AbortController();
     const generation = this.generation;
     this.controllers.add(controller);
@@ -156,11 +164,9 @@ export class LocalTextToSpeechEngine {
       }
       const audioBytes = await response.arrayBuffer();
       if (!audioBytes.byteLength) throw engineError(`${this.engine}_empty_audio`, 'O engine local retornou áudio vazio.');
-      const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
       let buffer;
       try {
-        this.context ||= new AudioContextClass({ latencyHint: 'interactive' });
-        if (this.context.state === 'suspended') await this.context.resume();
+        await contextReady;
         buffer = await this.context.decodeAudioData(audioBytes.slice(0));
       } catch (error) {
         throw audioOutputError(error, this.engine);
@@ -211,6 +217,17 @@ export class LocalTextToSpeechEngine {
       try { source.stop(0); } catch {}
       try { source.disconnect(); } catch {}
     }
+  }
+
+  async #ensureAudioContext() {
+    const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (!AudioContextClass) throw engineError('audio_output_unavailable', 'A saída de áudio não está disponível neste navegador.');
+    this.context ||= new AudioContextClass({ latencyHint: 'interactive' });
+    if (this.context.state === 'suspended') {
+      try { await this.context.resume(); }
+      catch (error) { throw audioOutputError(error, this.engine); }
+    }
+    return this.context;
   }
 }
 

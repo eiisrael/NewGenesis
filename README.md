@@ -480,7 +480,7 @@ SupremeMind check   4/4 testes aprovados + syntax + npm pack --dry-run
 
 Sem testes ignorados para esconder regressões.
 
-Neste branch 2.4, a validação atual aprovou **200/200** testes na suíte principal, manteve o SupremeMind em **4/4** com empacotamento seco e aprovou a verificação visual do composer, dos perfis Whisper e do teste Kokoro.
+Neste branch 2.4, a validação atual aprovou **203/203** testes na suíte principal, manteve o SupremeMind em **4/4** com empacotamento seco e aprovou a verificação visual do composer, dos perfis Whisper e do teste Kokoro.
 
 ---
 

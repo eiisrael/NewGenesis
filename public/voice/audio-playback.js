@@ -16,6 +16,10 @@ export class AudioPlaybackController {
     this.#drain();
   }
 
+  unlock() {
+    return Promise.allSettled(Object.values(this.engines).map(engine => engine?.unlock?.()));
+  }
+
   cancel(reason = 'cancelled') {
     this.generation += 1;
     this.queue = [];
@@ -46,6 +50,10 @@ export class AudioPlaybackController {
         if (generation === this.generation) this.callbacks.onEnd?.({ engine: selected.name });
       } catch (error) {
         if (generation !== this.generation || error?.name === 'AbortError') break;
+        if (!shouldFallback(error)) {
+          this.callbacks.onError?.(error);
+          break;
+        }
         const fallback = selectFallbackEngine(item.settings, this.engines, selected.name);
         if (!fallback) {
           this.callbacks.onError?.(error);
@@ -107,6 +115,14 @@ function selectFallbackEngine(settings, engines, failed) {
     if (name !== failed && engines[name]?.available) return { name, engine: engines[name] };
   }
   return null;
+}
+
+function shouldFallback(error) {
+  const code = String(error?.code || '');
+  if (!code) return true;
+  if (code === 'voice_tts_busy' || code.startsWith('audio_output_')) return false;
+  if (code.endsWith('_playback_failed')) return false;
+  return true;
 }
 
 function playSelected(selected, item, prepared, onFirstAudio) {

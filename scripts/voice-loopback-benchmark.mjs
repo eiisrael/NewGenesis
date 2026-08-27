@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const DEFAULT_SENTENCES = Object.freeze([
   'Bom dia. O que você gostaria de fazer hoje?',
+  'Genesis está me ouvindo?',
   'Encontrei três possíveis causas para esse problema. Posso verificar uma por uma com você.',
   'Consegui terminar a análise. Há duas coisas importantes que precisamos corrigir.'
 ]);

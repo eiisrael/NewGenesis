@@ -20,8 +20,10 @@ export class VoiceConversationController {
     this.suppressPlaybackIdle = false;
     this.restartQueued = false;
     this.manualSpeech = false;
+    this.microphoneTestActive = false;
     this.pushToTalkDeadline = 0;
     this.pushToTalkRetry = null;
+    this.pushToTalkTimeout = null;
     this.metrics = [];
     this.destroyed = false;
     this.#bindPlayback();
@@ -53,11 +55,27 @@ export class VoiceConversationController {
       return;
     }
     this.#cancelPlayback('push-to-talk');
-    this.pushToTalkDeadline = Date.now() + 15_000;
+    this.#armPushToTalkWindow({ testOnly: false });
     await this.listen({ once: true });
   }
 
-  async listen({ once = false, playbackActive = false } = {}) {
+  async testMicrophone() {
+    if ([VOICE_STATES.LISTENING, VOICE_STATES.SPEECH_DETECTED, VOICE_STATES.TRANSCRIBING].includes(this.machine.current)) {
+      this.#cancelPushToTalkRetry();
+      this.microphoneTestActive = false;
+      this.stopInput();
+      this.machine.reset({ reason: 'microphone-test-stop' });
+      this.callbacks.onStatus?.('idle');
+      return false;
+    }
+    this.#cancelPlayback('microphone-test');
+    this.microphoneTestActive = true;
+    this.#armPushToTalkWindow({ testOnly: true });
+    await this.listen({ once: true, testOnly: true });
+    return true;
+  }
+
+  async listen({ once = false, playbackActive = false, testOnly = false } = {}) {
     if (this.destroyed) return;
     const engine = this.#selectInputEngine();
     if (!engine) {
@@ -86,9 +104,9 @@ export class VoiceConversationController {
       onSpeechStart: detail => this.#onSpeechStart(detail),
       onInterim: text => this.callbacks.onInterim?.(text),
       onTranscribing: detail => this.#onTranscribing(detail),
-      onFinal: (text, detail) => this.#onTranscript(text, detail, { once }),
-      onEnd: detail => this.#onInputEnd(detail, { once, playbackActive }),
-      onError: error => this.#onInputError(error, { once, playbackActive })
+      onFinal: (text, detail) => this.#onTranscript(text, detail, { once, testOnly }),
+      onEnd: detail => this.#onInputEnd(detail, { once, playbackActive, testOnly }),
+      onError: error => this.#onInputError(error, { once, playbackActive, testOnly })
     };
     try { await engine.start(options); }
     catch (error) { this.#onInputError(error, { once, playbackActive }); throw error; }
@@ -144,12 +162,17 @@ export class VoiceConversationController {
 
   speakText(text) {
     const spoken = normalizeSpokenText(text);
-    if (!spoken) return;
+    if (!spoken) return false;
+    if (this.manualSpeech && this.playback.running) {
+      this.callbacks.onStatus?.('tts-busy');
+      return false;
+    }
     this.stopInput();
     this.#cancelPlayback('manual-speak');
     this.manualSpeech = true;
     this.chatFinished = true;
     this.playback.enqueue(spoken, this.settings);
+    return true;
   }
 
   interrupt() {
@@ -163,6 +186,7 @@ export class VoiceConversationController {
   stopAll(reason = 'cancelled') {
     this.#cancelPushToTalkRetry();
     this.manualSpeech = false;
+    this.microphoneTestActive = false;
     this.stopInput();
     this.#cancelPlayback(reason);
     this.chatBuffer = '';
@@ -222,7 +246,7 @@ export class VoiceConversationController {
     this.callbacks.onStatus?.('transcribing');
   }
 
-  #onTranscript(text, detail, { once }) {
+  #onTranscript(text, detail, { once, testOnly = false }) {
     const transcript = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 12000);
     if (!transcript) return;
     if (once) this.#cancelPushToTalkRetry();
@@ -234,6 +258,14 @@ export class VoiceConversationController {
       return;
     }
     this.mark('voice.stt_final', { engine: detail.engine, latencyMs: detail.latencyMs });
+    if (testOnly) {
+      this.microphoneTestActive = false;
+      this.stopInput();
+      this.#cancelPushToTalkRetry();
+      this.machine.reset({ reason: 'microphone-test-complete' });
+      this.callbacks.onStatus?.('microphone-ok', { transcript, engine: detail.engine });
+      return;
+    }
     this.callbacks.onInterim?.(transcript, { final: true });
     if (!this.settings.autoSend) {
       this.machine.reset({ reason: 'transcript-ready' });
@@ -248,11 +280,11 @@ export class VoiceConversationController {
     }
   }
 
-  #onInputEnd(detail, { once, playbackActive }) {
+  #onInputEnd(detail, { once, playbackActive, testOnly = false }) {
     this.inputActive = false;
     if (detail.transcript || this.machine.current === VOICE_STATES.THINKING) return;
     if (this.machine.current === VOICE_STATES.TRANSCRIBING) {
-      this.#recoverNoSpeech({ once, playbackActive, engine: detail.engine });
+      this.#recoverNoSpeech({ once, playbackActive, engine: detail.engine, testOnly });
       return;
     }
     if (playbackActive && this.playback.running) {
@@ -263,16 +295,16 @@ export class VoiceConversationController {
     else if (this.machine.current !== VOICE_STATES.ERROR) this.machine.reset({ reason: 'input-ended' });
   }
 
-  #onInputError(error, { once, playbackActive }) {
+  #onInputError(error, { once, playbackActive, testOnly = false }) {
     this.inputActive = false;
     if (error?.code === 'browser_stt_no-speech') {
-      this.#recoverNoSpeech({ once, playbackActive, engine: 'browser' });
+      this.#recoverNoSpeech({ once, playbackActive, engine: 'browser', testOnly });
       return;
     }
     this.#fail(error);
   }
 
-  #recoverNoSpeech({ once, playbackActive, engine }) {
+  #recoverNoSpeech({ once, playbackActive, engine, testOnly = false }) {
     this.bargeCandidate = false;
     this.callbacks.onInterim?.('', { final: true });
     this.callbacks.onStatus?.('no-speech');
@@ -283,7 +315,7 @@ export class VoiceConversationController {
     }
     if (once && Date.now() < this.pushToTalkDeadline) {
       this.#transition(VOICE_STATES.LISTENING, { reason: 'push-to-talk-waiting' });
-      this.#schedulePushToTalkListen();
+      this.#schedulePushToTalkListen({ testOnly });
       return;
     }
     if (once) this.#cancelPushToTalkRetry();
@@ -305,7 +337,7 @@ export class VoiceConversationController {
     });
   }
 
-  #schedulePushToTalkListen() {
+  #schedulePushToTalkListen({ testOnly = this.microphoneTestActive } = {}) {
     if (this.pushToTalkRetry) return;
     this.pushToTalkRetry = setTimeout(() => {
       this.pushToTalkRetry = null;
@@ -313,13 +345,30 @@ export class VoiceConversationController {
         if (Date.now() >= this.pushToTalkDeadline && this.machine.current !== VOICE_STATES.ERROR) this.machine.reset({ reason: 'push-to-talk-timeout' });
         return;
       }
-      this.listen({ once: true }).catch(() => {});
+      this.listen({ once: true, testOnly }).catch(() => {});
     }, 250);
+  }
+
+  #armPushToTalkWindow({ testOnly }) {
+    this.#cancelPushToTalkRetry();
+    this.microphoneTestActive = testOnly === true;
+    this.pushToTalkDeadline = Date.now() + 15_000;
+    this.pushToTalkTimeout = setTimeout(() => {
+      this.pushToTalkTimeout = null;
+      this.pushToTalkDeadline = 0;
+      if (this.destroyed || ![VOICE_STATES.LISTENING, VOICE_STATES.SPEECH_DETECTED].includes(this.machine.current)) return;
+      this.stopInput();
+      this.microphoneTestActive = false;
+      this.machine.reset({ reason: testOnly ? 'microphone-test-timeout' : 'push-to-talk-timeout' });
+      this.callbacks.onStatus?.(testOnly ? 'microphone-timeout' : 'no-speech');
+    }, 15_000);
   }
 
   #cancelPushToTalkRetry() {
     if (this.pushToTalkRetry) clearTimeout(this.pushToTalkRetry);
+    if (this.pushToTalkTimeout) clearTimeout(this.pushToTalkTimeout);
     this.pushToTalkRetry = null;
+    this.pushToTalkTimeout = null;
     this.pushToTalkDeadline = 0;
   }
 
@@ -333,6 +382,10 @@ export class VoiceConversationController {
   #bindPlayback() {
     Object.assign(this.playback.callbacks, {
       ...this.playback.callbacks,
+      onPrepare: detail => {
+        this.#transition(VOICE_STATES.SPEAKING, { engine: detail.engine, preparing: true });
+        this.callbacks.onStatus?.('tts-preparing', detail);
+      },
       onStart: detail => {
         this.mark('voice.tts_start', { engine: detail.engine });
         this.#transition(VOICE_STATES.SPEAKING, { engine: detail.engine });
@@ -385,6 +438,7 @@ export class VoiceConversationController {
   #fail(error) {
     this.#cancelPushToTalkRetry();
     this.manualSpeech = false;
+    this.microphoneTestActive = false;
     this.stopInput();
     if (this.machine.current !== VOICE_STATES.ERROR) this.#transition(VOICE_STATES.ERROR, { code: error?.code, message: error?.message });
     this.callbacks.onStatus?.('error', error);

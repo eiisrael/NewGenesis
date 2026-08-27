@@ -9,6 +9,7 @@ const MAX_TTS_TEXT = 2000;
 const MAX_TTS_AUDIO_BYTES = 24 * 1024 * 1024;
 const STT_TIMEOUT_MS = 90_000;
 const TTS_TIMEOUT_MS = 120_000;
+const WHISPER_INITIAL_PROMPT = 'Genesis. Gênesis. Caruaru. Pernambuco. SupremeMind. Assistente Genesis em português do Brasil.';
 
 const profileNames = Object.freeze({ rapid: 'rapid', balanced: 'balanced', accurate: 'accurate' });
 const ttsPresets = Object.freeze({
@@ -199,6 +200,7 @@ export class VoiceRuntime {
     try {
       await fs.writeFile(inputPath, buffer, { flag: 'wx', mode: 0o600 });
       const args = ['-m', selected.model, '-f', inputPath, '-l', 'pt', '-oj', '-of', outputPrefix, '-np', '-nt'];
+      args.push('--prompt', WHISPER_INITIAL_PROMPT);
       const vad = this.#resolve(this.manifest.whisper.vadModel);
       if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
       await this.#run(this.#resolve(this.manifest.whisper.binary), args, { timeoutMs: STT_TIMEOUT_MS, kind: 'stt' });
@@ -215,6 +217,7 @@ export class VoiceRuntime {
     form.append('response_format', 'json');
     form.append('language', 'pt');
     form.append('temperature', '0.0');
+    form.append('prompt', WHISPER_INITIAL_PROMPT);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
     try {

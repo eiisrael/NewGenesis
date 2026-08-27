@@ -78,16 +78,35 @@ export class MicrophoneAudioInput {
   }
 
   async open() {
-    if (this.stream) return;
+    if (this.#liveTrack()) return;
+    if (this.stream || this.context) await this.close();
     if (!this.available) throw voiceError('microphone_unavailable', 'Captura local do microfone não está disponível neste navegador.');
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          channelCount: { ideal: 1 }
+        },
         video: false
       });
     } catch (error) {
-      throw microphoneError(error);
+      if (error?.name !== 'OverconstrainedError') throw microphoneError(error);
+      try { this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); }
+      catch (fallbackError) { throw microphoneError(fallbackError); }
     }
+    const track = this.#liveTrack();
+    if (!track) {
+      for (const item of this.stream?.getTracks?.() || []) item.stop();
+      this.stream = null;
+      throw voiceError('microphone_not_found', 'O navegador não retornou uma entrada de áudio ativa.');
+    }
+    track.onended = () => {
+      if (!this.armed) return;
+      this.disarm();
+      this.callbacks.onError?.(voiceError('microphone_disconnected', 'O microfone foi desconectado ou desativado durante a captura.'));
+    };
     const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
     try {
       this.context = new Context({ latencyHint: 'interactive' });
@@ -150,10 +169,17 @@ export class MicrophoneAudioInput {
     try { this.source?.disconnect(); } catch { /* já desconectado */ }
     try { this.processor?.disconnect(); } catch { /* já desconectado */ }
     try { this.mute?.disconnect(); } catch { /* já desconectado */ }
-    for (const track of this.stream?.getTracks?.() || []) track.stop();
+    for (const track of this.stream?.getTracks?.() || []) {
+      track.onended = null;
+      track.stop();
+    }
     await this.context?.close?.().catch(() => {});
     this.stream = this.context = this.processor = this.source = this.mute = null;
     this.captureMode = 'closed';
+  }
+
+  #liveTrack() {
+    return (this.stream?.getAudioTracks?.() || []).find(track => track.readyState === 'live') || null;
   }
 
   #process(input) {
@@ -253,6 +279,12 @@ function microphoneError(error) {
   }
   if (error?.name === 'NotReadableError') {
     return voiceError('microphone_busy', 'O microfone está ocupado ou indisponível para este navegador.');
+  }
+  if (error?.name === 'OverconstrainedError') {
+    return voiceError('microphone_constraints_failed', 'O microfone não aceita a configuração de captura solicitada.');
+  }
+  if (error?.name === 'AbortError') {
+    return voiceError('microphone_start_aborted', 'O navegador não conseguiu concluir a inicialização do microfone.');
   }
   return voiceError('microphone_open_failed', 'Não foi possível iniciar o microfone local.');
 }

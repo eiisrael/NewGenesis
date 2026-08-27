@@ -7,10 +7,12 @@ A voz usa o mesmo composer, histórico e orquestrador do chat. A transcrição e
 1. Inicie com `npm start` e abra `http://127.0.0.1:7331`.
 2. Abra **Configurações de voz** e escolha reconhecimento, TTS, qualidade, voz e velocidade.
 3. Use **Falar uma vez** para push-to-talk ou ative **Modo conversa mãos-livres**.
+4. **Testar microfone** abre a entrada por até 15 segundos, mostra a frase reconhecida e não envia nada ao chat. Se o Windows ou o navegador não expuserem uma entrada ativa, a interface informa se o dispositivo está ausente, ocupado ou sem permissão.
+5. **Testar voz do Genesis** bloqueia cliques repetidos enquanto o áudio é preparado. O contexto de saída é desbloqueado no clique, antes do aquecimento do engine local, para evitar bloqueio de reprodução pelo navegador.
 4. No modo conversa, o ciclo passa por ouvindo, transcrevendo, pensando e falando. Se o STT não produzir texto, o ciclo volta a ouvir sem travar.
 5. Fale durante a resposta para interromper: o áudio atual, a preparação e a fila pendente são cancelados antes da nova transcrição.
 
-O TTS normal é sempre local. A ordem automática é Kokoro, Piper e Chatterbox; uma falha só tenta outro engine local instalado. Não há fallback para `speechSynthesis`. `SpeechRecognition` permanece apenas como fallback explícito de entrada e pode depender do fornecedor do navegador. **Preferir voz 100% local** o bloqueia.
+O TTS normal é sempre local. A ordem automática é Kokoro, Piper e Chatterbox; somente uma falha real de síntese tenta outro engine local instalado. Falhas da saída de áudio e engine ocupado são exibidas diretamente, porque trocar Kokoro por Piper não corrige o mesmo dispositivo de reprodução. Não há fallback para `speechSynthesis`. `SpeechRecognition` permanece apenas como fallback explícito de entrada e pode depender do fornecedor do navegador. **Preferir voz 100% local** o bloqueia.
 
 | Perfil | STT | TTS | Observações |
 | --- | --- | --- | --- |

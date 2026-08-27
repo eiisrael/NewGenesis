@@ -132,10 +132,13 @@ function bindControls() {
     persistSettings();
   });
   ui.voiceTestMic.addEventListener('click', () => {
-    composerBaseline = input.value.trim();
-    controller.togglePushToTalk().catch(error => renderStatus('error', error));
+    controller.testMicrophone().catch(error => renderStatus('error', error));
   });
-  ui.voiceTestSpeech.addEventListener('click', () => controller.speakText('Bom dia. O que você gostaria de fazer hoje?'));
+  ui.voiceTestSpeech.addEventListener('click', () => {
+    playback.unlock().catch(() => {});
+    controller.speakText('Bom dia. O que você gostaria de fazer hoje?');
+  });
+  document.addEventListener('pointerdown', () => { playback.unlock().catch(() => {}); }, { once: true });
   document.addEventListener('click', event => {
     if (!event.target.closest('#genesisVoiceControl')) {
       ui.voicePopover.hidden = true;
@@ -210,6 +213,7 @@ function renderState(event) {
   ui.voiceMicButton.classList.toggle('listening', listening);
   ui.voiceMicButton.setAttribute('aria-pressed', String(listening));
   ui.voiceOptionsButton.classList.toggle('speaking', event.current === 'SPEAKING');
+  ui.voiceTestSpeech.disabled = event.current === 'SPEAKING';
   updateAvailability();
 }
 
@@ -217,7 +221,12 @@ function renderStatus(status, detail) {
   const messages = {
     idle: '', listening: 'Fale normalmente. O final da frase será detectado automaticamente.',
     'speech-detected': 'Fala detectada; continue falando.', transcribing: 'Transcrevendo localmente…', thinking: 'Mensagem enviada ao chat.',
-    speaking: 'A resposta está sendo reproduzida. Você pode interromper falando.', interrupted: 'Reprodução cancelada; ouvindo sua nova pergunta.',
+    speaking: 'A resposta está sendo reproduzida. Você pode interromper falando.',
+    'tts-preparing': 'Preparando a voz local. O primeiro teste pode levar alguns segundos.',
+    'tts-busy': 'A voz local já está sendo preparada. Aguarde a reprodução.',
+    'microphone-ok': `Microfone funcionando via ${detail?.engine === 'local' ? 'Whisper local' : 'navegador'}. Reconhecido: “${detail?.transcript || ''}”`,
+    'microphone-timeout': 'O microfone abriu, mas nenhuma fala foi detectada em 15 segundos. Verifique o dispositivo de entrada e o nível de volume do Windows.',
+    interrupted: 'Reprodução cancelada; ouvindo sua nova pergunta.',
     'no-speech': controller.machine.current === 'LISTENING'
       ? 'Nenhuma fala detectada; o microfone continua ativo por alguns segundos.'
       : 'Nenhuma fala foi detectada.',
