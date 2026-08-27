@@ -100,6 +100,14 @@ No Windows também é possível utilizar:
 start.bat
 ```
 
+Para encerrar com segurança a instância ativa na porta 7331 e iniciar outra:
+
+```text
+restart.bat
+```
+
+O reinício confirma primeiro que a porta pertence ao **Genesis New**. Ele não finaliza processos quando a porta estiver ocupada por outro serviço.
+
 Abra no navegador:
 
 ```text
