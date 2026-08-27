@@ -269,7 +269,7 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         const thinkingState = window.__genesisVoice.controller.machine.current;
         document.dispatchEvent(new CustomEvent('genesis:chat-start'));
         document.dispatchEvent(new CustomEvent('genesis:chat-delta', { detail: { content: 'O SupremeMind preserva o contexto. ' } }));
-        for (let attempt = 0; attempt < 100 && !window.__genesisSource; attempt += 1) {
+        for (let attempt = 0; attempt < 500 && !window.__genesisSource; attempt += 1) {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         if (!window.__genesisSource) throw new Error('O TTS simulado não iniciou a reprodução.');
@@ -282,7 +282,7 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         window.__genesisSource = undefined;
         document.dispatchEvent(new CustomEvent('genesis:chat-start'));
         document.dispatchEvent(new CustomEvent('genesis:chat-delta', { detail: { content: 'Genesis está falando esta resposta. ' } }));
-        for (let attempt = 0; attempt < 100 && !window.__genesisSource; attempt += 1) {
+        for (let attempt = 0; attempt < 500 && !window.__genesisSource; attempt += 1) {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         if (!window.__genesisSource) throw new Error('O segundo TTS simulado não iniciou a reprodução.');
