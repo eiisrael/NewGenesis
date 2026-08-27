@@ -173,6 +173,8 @@ Ele pode:
 - analisar impacto de alterações;
 - manter memórias estruturadas.
 
+Quando existe um projeto indexado, o mesmo contexto seletivo do SupremeMind participa também da conversa normal com o Genesis, não apenas da Área Neural. O orçamento varia conforme a intenção (chat, explicação, código, depuração ou arquitetura), e a geração do índice faz parte da chave de cache para impedir respostas baseadas em uma versão estrutural antiga.
+
 Arquivos potencialmente sensíveis ou inadequados para indexação, como segredos, certificados, chaves, binários e outros formatos inseguros, são recusados pelas proteções do sistema.
 
 O SupremeMind possui também sua própria rotina de validação:
@@ -212,13 +214,14 @@ http://127.0.0.1:7331/neural/neural.html
 
 A voz é uma camada modular sobre o mesmo composer, histórico e orquestrador. **Conversa por voz** detecta início/fim da fala, envia automaticamente, fala sentenças estáveis durante o streaming, volta a ouvir e aceita barge-in para cancelar TTS. Push-to-talk e chat textual continuam disponíveis.
 
-O core inicia sem Python/modelos. O modo compatível mantém `SpeechRecognition` e `speechSynthesis`; o modo leve local usa whisper.cpp+Silero e Piper pt-BR; Chatterbox pt-BR é opcional/experimental e exige aceite separado para mais de 3,21 GB.
+O core inicia sem Python/modelos. `SpeechRecognition` permanece apenas como fallback de entrada; toda saída falada usa um engine local. O perfil recomendado combina whisper.cpp+Silero com Kokoro-82M pt-BR; Piper é a alternativa mais leve e Chatterbox pt-BR continua opcional/experimental.
 
 Para instalar o perfil local validado no Windows:
 
 ```powershell
 npm run voice:diagnose
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile balanced -AcceptDownload
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component kokoro -AcceptDownload -AcceptLargeDownload
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component piper -AcceptDownload
 ```
 
@@ -226,7 +229,7 @@ Se as APIs e engines não estiverem disponíveis, **o chat textual continua func
 
 ## Privacidade da voz
 
-O áudio não é armazenado nem registrado. Arquivos temporários são removidos deterministicamente. O reconhecimento do navegador pode usar serviço online do fornecedor; **Preferir voz 100% local** impede esse fallback. O microfone é limitado à própria origem e a CSP continua `style-src 'self'; script-src 'self'`. As preferências ficam no armazenamento local do navegador.
+O áudio não é armazenado nem registrado. Arquivos temporários são removidos deterministicamente. O reconhecimento do navegador pode usar serviço online do fornecedor; **Preferir voz 100% local** impede esse fallback. O microfone é limitado à própria origem e a geolocalização do navegador é bloqueada. Cidade, data, hora e clima são respondidos no chat pelo próprio Genesis; a cidade deve ser declarada na conversa e não aparece em widget. A CSP continua `style-src 'self'; script-src 'self'` e as preferências ficam no armazenamento local do navegador.
 
 Guias: [`docs/VOICE.md`](docs/VOICE.md), [`docs/VOICE_SETUP_WINDOWS.md`](docs/VOICE_SETUP_WINDOWS.md), [`docs/VOICE_ARCHITECTURE.md`](docs/VOICE_ARCHITECTURE.md), [`docs/VOICE_BENCHMARK.md`](docs/VOICE_BENCHMARK.md) e [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
@@ -477,7 +480,7 @@ SupremeMind check   4/4 testes aprovados + syntax + npm pack --dry-run
 
 Sem testes ignorados para esconder regressões.
 
-Neste branch 2.4, a validação de voz elevou a suíte principal para **179/179**, manteve SupremeMind em **4/4** e aprovou o smoke de conversa, barge-in e fallback textual.
+Neste branch 2.4, a validação atual aprovou **200/200** testes na suíte principal, manteve o SupremeMind em **4/4** com empacotamento seco e aprovou a verificação visual do composer, dos perfis Whisper e do teste Kokoro.
 
 ---
 

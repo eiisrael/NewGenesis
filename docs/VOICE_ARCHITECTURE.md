@@ -1,44 +1,50 @@
-# Arquitetura da conversa por voz
+# Arquitetura de voz e contexto local
 
-## Fluxo
+## Fluxo de voz
 
-`public/voice.js` é apenas composição e UI. A execução é dividida entre:
+`public/voice.js` compõe a UI; a execução é separada em:
 
-- `VoiceConversationController`: coordena turno, autoenvio, auto-retomada, streaming e barge-in.
-- `VoiceStateMachine`: transições explícitas entre `IDLE`, `LISTENING`, `SPEECH_DETECTED`, `TRANSCRIBING`, `THINKING`, `SPEAKING`, `INTERRUPTING` e `ERROR`.
-- `LocalAudioInputEngine` + `AdaptiveEnergyVad`: captação, pre-roll, VAD adaptativo, WAV mono 16 kHz e limiar mais alto durante reprodução.
-- `BrowserSpeechInputEngine`: fallback com `SpeechRecognition`/`webkitSpeechRecognition`.
-- `LocalSpeechToTextEngine`: envia somente o utterance WAV ao runtime loopback do NewGenesis.
-- `AudioPlaybackController`: fila sequencial, cancelamento imediato e fallback controlado.
-- `LocalTextToSpeechEngine` e `BrowserTextToSpeechEngine`: Chatterbox/Piper opcionais e `speechSynthesis`.
-- `VoiceSettings`: defaults seguros, enumeração, migração e preferências locais.
-- `speech-normalizer`: sentence chunking estável, texto falado e filtro de feedback acústico.
-- `VoiceRuntime`: processos nativos, limites, diretórios temporários e integração ao lifecycle do servidor.
+- `VoiceConversationController`: turno, autoenvio, retomada, streaming, STT vazio recuperável e barge-in;
+- `VoiceStateMachine`: `IDLE`, `LISTENING`, `SPEECH_DETECTED`, `TRANSCRIBING`, `THINKING`, `SPEAKING`, `INTERRUPTING` e `ERROR`;
+- `MicrophoneAudioInput` + `AdaptiveEnergyVad`: `AudioWorklet` primário, fallback explícito, pre-roll, VAD adaptativo e WAV mono 16 kHz;
+- `BrowserSpeechInputEngine`: fallback de entrada com `SpeechRecognition`;
+- `LocalSpeechInputEngine`: envia somente o utterance WAV ao servidor loopback;
+- `AudioPlaybackController`: fila sequencial, preparação limitada ao próximo trecho, cancelamento imediato e fallback exclusivamente local;
+- `LocalTextToSpeechEngine`: prepara, decodifica e toca Kokoro, Piper ou Chatterbox;
+- `speech-normalizer`: normalização pt-BR, chunking em fronteiras estáveis e filtro de possível retorno acústico;
+- `VoiceRuntime`: `whisper-server` e workers JSONL TTS persistentes, limites, temporários e shutdown.
 
-O chat emite `genesis:chat-start`, `genesis:chat-delta`, `genesis:chat-end` e `genesis:chat-error`. Somente sentenças terminadas entram na fila TTS. Barge-in faz `SPEAKING → INTERRUPTING → SPEECH_DETECTED`, cancela o item atual e os pendentes e mantém a nova fala.
+O chat emite `genesis:chat-start`, `genesis:chat-delta`, `genesis:chat-end` e `genesis:chat-error`. Somente trechos estáveis entram na fila. Barge-in percorre `SPEAKING → INTERRUPTING → SPEECH_DETECTED` e cancela reprodução, fetches e fila.
 
-## Escolha de engines
+## Processos locais
 
-| STT | Pontos fortes | Limitações | Decisão |
+| Engine | Processo | Persistência | Fallback |
 | --- | --- | --- | --- |
-| whisper.cpp 1.8.6 | Windows CPU oficial, modelos quantizados multilíngues, CLI simples, Silero VAD integrado | subprocesso por utterance tem cold start; Vulkan requer build manual | engine local padrão |
-| sherpa-onnx 1.13.2 | streaming/non-streaming ASR, VAD, TTS, Node/WASM e ampla portabilidade | superfície nativa e manutenção maiores para este core sem dependências | pesquisado, não integrado |
-| Browser Recognition | zero instalação e boa compatibilidade | implementação/privacidade dependem do navegador; pode usar rede | fallback explícito, proibido no modo 100% local |
+| whisper.cpp 1.8.6 | `whisper-server.exe` em porta loopback aleatória | modelo permanece carregado | CLI por requisição se o servidor falhar |
+| Kokoro-82M | `tts-server.py --engine kokoro` | modelo, pipeline e eSpeak permanecem carregados | outro TTS local disponível |
+| Piper 1.4.2 | `tts-server.py --engine piper` | `PiperVoice` permanece carregada | outro TTS local disponível |
+| Chatterbox | `tts-server.py --engine chatterbox` | modelo permanece carregado | outro TTS local disponível |
 
-| TTS | Pontos fortes | Limitações | Papel |
-| --- | --- | --- | --- |
-| Chatterbox Multilingual V3 pt-BR | maior ambição de naturalidade, MIT, prosódia configurável | mais de 3,21 GB, PyTorch, CPU lenta e não validado nesta máquina | natural opcional/experimental |
-| Piper 1.4.2 + cadu | leve, local, modelo pt-BR permissivo | engine GPL-3.0 separado; voz menos natural e geração ainda lenta no i5 testado | fallback local leve |
-| `speechSynthesis` | zero instalação | qualidade e vozes variam por SO/navegador | compatibilidade |
+Kokoro é a primeira opção automática por ter vozes oficiais pt-BR e licença Apache-2.0. Piper permanece como opção leve. Chatterbox continua experimental e pesado. TTS de navegador foi removido do fluxo normal.
 
-Transformers.js/WebGPU não foi integrado porque o issue oficial #1739, aberto em agosto de 2026, ainda descreve crescimento de memória em Whisper contínuo. Não há base honesta para torná-lo padrão sem correção e benchmark longo.
+O worker JSONL força UTF-8 na entrada e na saída. Isso é obrigatório no Windows: herdar uma página de código legada corrompe acentos antes do G2P (por exemplo, `você` pode virar mojibake e produzir nomes audíveis de símbolos). A voz é carregada antes da semente determinística do Kokoro, tornando a primeira síntese equivalente às seguintes. O WAV final remove somente silêncio externo, preserva até 15 ms no início e 55 ms no fim e usa 40 ms entre chunks internos.
+
+O binário Windows oficial instalado do whisper.cpp é CPU. A Radeon RX 460 anunciar Vulkan não prova aceleração do Whisper; o upstream exige build `GGML_VULKAN=ON`, e não havia toolchain auditado nem binário oficial equivalente nesta validação. CPU continua sendo o baseline suportado.
+
+## Contexto local
+
+`src/local-context.js` valida timezone, locale e a cidade declarada na conversa, resolve data/hora deterministicamente e encapsula geocodificação e clima. A geolocalização do navegador foi desativada: o Genesis usa uma cidade e estado/país explicitamente informados e pode reutilizar a última cidade declarada na conversa. As coordenadas resolvidas pelo provedor são somente um detalhe interno da consulta meteorológica e nunca são exibidas, persistidas ou tratadas como GPS do usuário.
+
+O serviço de clima usa origens e caminhos fixos, redirects bloqueados, timeout, resposta limitada e cache curto. O navegador não se conecta diretamente ao provedor, portanto a CSP permanece `connect-src 'self'`.
 
 ## Limites e segurança
 
-- rotas locais mesmas-origem, Host/Origin loopback e `x-genesis-client: web` nas mutações;
+- Host/Origin loopback e `x-genesis-client: web` em mutações;
 - WAV PCM mono 16-bit, 8–48 kHz, até 10 MiB e 45 s;
-- texto TTS até 2.000 caracteres e JSON até 12 KiB;
-- uma geração por engine, STT 90 s, TTS 120 s, saída WAV até 24 MiB;
-- caminhos resolvidos apenas sob `.genesis/voice`;
-- `spawn` com `shell: false`, argumentos fixos e encerramento no shutdown;
-- CSP permanece sem `unsafe-inline`.
+- texto TTS até 2.000 caracteres; uma operação STT/TTS ativa por vez;
+- STT 90 s, TTS 120 s e WAV TTS até 24 MiB;
+- caminhos apenas sob `.genesis/voice` e `spawn` com `shell: false`;
+- workers encerrados e temporários apagados no lifecycle do servidor;
+- CSP sem `unsafe-inline`; microfone restrito à própria origem;
+- `Permissions-Policy` bloqueia geolocalização e permite microfone somente na própria origem;
+- nenhuma alegação de GPS real, precisão humana ou naturalidade sem ensaio correspondente.

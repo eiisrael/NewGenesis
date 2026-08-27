@@ -1,34 +1,38 @@
-# Conversa por voz
+# Conversa por voz e contexto local
 
-A camada de voz usa o mesmo composer, histórico e orquestrador do chat. O texto exibido permanece canônico; somente uma cópia determinística é simplificada para fala, removendo ruído de Markdown, URLs longas, tabelas, blocos extensos de código e emojis decorativos.
+A voz usa o mesmo composer, histórico e orquestrador do chat. A transcrição exibida continua canônica; apenas uma cópia determinística é normalizada para pronúncia, com datas, horários, versões, unidades e siglas em pt-BR e sem ruído de Markdown, tabelas, URLs longas ou blocos extensos de código.
 
 ## Usar
 
 1. Inicie com `npm start` e abra `http://127.0.0.1:7331`.
-2. Abra **Voz**.
-3. Escolha STT, TTS, qualidade, preset, voz e velocidade.
-4. Use **Testar microfone** e **Testar voz do Genesis**.
-5. Ative **Conversa por voz**. O ciclo passa por “Ouvindo”, “Entendendo”, “Genesis está pensando” e “Genesis está falando”, retornando automaticamente a “Ouvindo”.
-6. Fale durante a resposta para interromper. O áudio e a fila pendente são cancelados antes da nova transcrição.
+2. Abra **Configurações de voz** e escolha reconhecimento, TTS, qualidade, voz e velocidade.
+3. Use **Falar uma vez** para push-to-talk ou ative **Modo conversa mãos-livres**.
+4. No modo conversa, o ciclo passa por ouvindo, transcrevendo, pensando e falando. Se o STT não produzir texto, o ciclo volta a ouvir sem travar.
+5. Fale durante a resposta para interromper: o áudio atual, a preparação e a fila pendente são cancelados antes da nova transcrição.
 
-O botão do microfone mantém o push-to-talk. `Esc` interrompe captação/reprodução. O chat textual continua funcionando mesmo sem qualquer API ou engine de voz.
+O TTS normal é sempre local. A ordem automática é Kokoro, Piper e Chatterbox; uma falha só tenta outro engine local instalado. Não há fallback para `speechSynthesis`. `SpeechRecognition` permanece apenas como fallback explícito de entrada e pode depender do fornecedor do navegador. **Preferir voz 100% local** o bloqueia.
 
-## Modos
-
-| Perfil | STT | TTS | Rede e observações |
+| Perfil | STT | TTS | Observações |
 | --- | --- | --- | --- |
-| Compatibilidade | API do navegador | `speechSynthesis` | pode depender do fornecedor do navegador; a UI avisa |
-| Leve local | whisper.cpp quantizado + Silero | Piper pt-BR | local, menor download e menor qualidade perceptual que Chatterbox |
-| Natural | whisper.cpp balanceado + Silero | Chatterbox pt-BR | local, opcional e pesado; requer Python compatível e mais de 3,21 GB só em pesos principais |
+| Compatibilidade de entrada | API do navegador | engine local instalado | o reconhecimento pode usar rede; a saída continua local |
+| Local recomendado | whisper.cpp + Silero | Kokoro-82M pt-BR | processos persistentes; maior instalação e voz ainda sujeita a avaliação humana |
+| Local leve | whisper.cpp + Silero | Piper pt-BR | menor modelo TTS e worker persistente |
+| Experimental pesado | whisper.cpp + Silero | Chatterbox pt-BR | mais de 3,21 GB só nos pesos principais; não validado nesta máquina |
 
-**Preferir voz 100% local** proíbe fallback silencioso para `SpeechRecognition`. Se o Whisper não estiver instalado, a captação fica indisponível em vez de enviar áudio a terceiros. A falha de TTS local só cai para `speechSynthesis` quando a preferência local está desligada.
+## Contexto de entrada
 
-## Privacidade
+Turnos de voz enviam apenas metadados estruturados: modo de entrada, engine STT, modo conversa e se a resposta será falada. Áudio e transcrição nunca entram nesses metadados. O orquestrador recebe uma seção de sistema confiável para preferir frases pronunciáveis quando necessário.
 
-- O áudio bruto não entra no histórico, na telemetria ou nas métricas.
-- O WAV temporário do Whisper e o texto temporário do TTS são criados em diretório exclusivo e removidos em `finally`; o shutdown também limpa a área temporária.
-- As métricas guardam apenas nomes de marcos, horário do cliente, engine e latência limitada.
-- O microfone é solicitado apenas após ação do usuário; recarregar a página não reativa conversa nem pede permissão.
-- `echoCancellation`, `noiseSuppression` e `autoGainControl` são solicitados ao navegador quando suportados.
+Data, hora, cidade explicitamente informada e clima são resolvidos internamente pelo Genesis e entregues na conversa. Data e hora vêm do relógio do sistema, sem modelo remoto. Para clima de uma cidade, o servidor resolve o nome solicitado e consulta somente os provedores documentados. O Genesis pode reutilizar a última cidade declarada na conversa; ele não usa localização aproximada do navegador e não exibe widget, raio ou coordenadas.
 
-Consulte [VOICE_SETUP_WINDOWS.md](VOICE_SETUP_WINDOWS.md), [VOICE_ARCHITECTURE.md](VOICE_ARCHITECTURE.md), [VOICE_BENCHMARK.md](VOICE_BENCHMARK.md) e `THIRD_PARTY_NOTICES.md`.
+## Privacidade e limites
+
+- O microfone depende de ação e permissão explícitas do usuário; a geolocalização do navegador permanece desativada.
+- A captura usa `AudioWorklet` same-origin, com `ScriptProcessor` somente como fallback compatível.
+- O áudio bruto não entra em histórico, telemetria ou métricas. Temporários são removidos após cada operação e no shutdown.
+- As métricas guardam apenas marcos, horário do cliente, engine e latência limitada.
+- TTS e STT locais permanecem carregados em workers/servidor persistentes; o primeiro uso inclui aquecimento.
+- O protocolo JSONL Node.js/Python força UTF-8, preservando acentos pt-BR; o texto exibido nunca é reescrito pela camada de voz.
+- O chat textual continua funcional sem engine de voz, microfone, localização ou serviço de clima.
+
+Consulte [VOICE_SETUP_WINDOWS.md](VOICE_SETUP_WINDOWS.md), [VOICE_ARCHITECTURE.md](VOICE_ARCHITECTURE.md), [VOICE_BENCHMARK.md](VOICE_BENCHMARK.md) e [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
