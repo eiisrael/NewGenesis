@@ -19,6 +19,7 @@ import { pickProjectDirectory } from './native-folder-picker.js';
 import { UserMemoryStore } from './user-memory.js';
 import { SupremeMindIntegration } from './suprememind-integration.js';
 import { createTaskContract } from './core/task-contract.js';
+import { conversationalFailureMessage, resolveConversationalResponse } from './core/conversation.js';
 import { TaskLedgerStore } from './core/task-ledger.js';
 import { createRuntimeShutdown } from './runtime-lifecycle.js';
 import { VoiceRuntime } from './voice/voice-runtime.js';
@@ -380,6 +381,21 @@ function terminalExecutionReport(error, contract, usage = null) {
   );
   return lines.join('\n');
 }
+
+function terminalResponse(error, contract, usage = null, language = 'pt-BR') {
+  return ['change', 'fix'].includes(contract?.kind)
+    ? terminalExecutionReport(error, contract, usage)
+    : conversationalFailureMessage(error, contract, language);
+}
+
+const VOICE_NOTICE_MESSAGES = Object.freeze({
+  microphone_permission_denied: 'Não estou conseguindo ouvir você porque o acesso ao microfone foi negado. Permita o uso do microfone neste site e clique em “Falar uma vez” novamente.',
+  microphone_busy: 'Não estou conseguindo ouvir você porque o microfone está ocupado ou indisponível. Feche o aplicativo que está usando o dispositivo e clique em “Falar uma vez” novamente.',
+  microphone_disconnected: 'Não estou conseguindo ouvir você porque o microfone foi desconectado ou desativado. Reconecte ou habilite o dispositivo e tente novamente.',
+  microphone_not_found: 'Não estou conseguindo ouvir você porque nenhum microfone ativo foi encontrado. Verifique o dispositivo de entrada do Windows e clique em “Falar uma vez” novamente.',
+  microphone_unavailable: 'Não estou conseguindo ouvir você porque a captura do microfone não está disponível neste navegador. Verifique o dispositivo e a permissão do site e tente novamente.',
+  stt_unavailable: 'Não estou conseguindo ouvir você porque não há um mecanismo de reconhecimento de voz disponível. Verifique o microfone e instale ou habilite uma opção de reconhecimento de voz.'
+});
 
 function attachmentDisposition(name, download = false) {
   const safe = String(name || 'arquivo').replace(/["\\\r\n]/g, '_');
@@ -1246,6 +1262,43 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
           return response.end(body);
         }
 
+        if (segments[3] === 'notices' && request.method === 'POST') {
+          assertTrustedMutation(request);
+          const body = await readJson(request);
+          if (body.kind !== 'microphone_unavailable') {
+            return sendJson(response, 400, { error: { code: 'invalid_notice', message: 'Aviso local inválido.' } });
+          }
+          const code = Object.hasOwn(VOICE_NOTICE_MESSAGES, body.code) ? body.code : 'microphone_unavailable';
+          const language = body.language === 'en-US' ? 'en-US' : 'pt-BR';
+          const content = language === 'en-US'
+            ? 'I cannot hear you because no available microphone could be accessed. Check the input device and this site’s microphone permission, then click “Speak once” again.'
+            : VOICE_NOTICE_MESSAGES[code];
+          const recent = conversation.messages.at(-1);
+          if (recent?.role === 'assistant' && recent.meta?.noticeKind === body.kind && recent.meta?.code === code
+            && Date.now() - new Date(recent.createdAt).getTime() < 10_000) {
+            return sendJson(response, 200, { message: publicMessage(recent), conversation: store.listConversations().find(item => item.id === id), deduplicated: true });
+          }
+          const message = await store.addMessage(id, {
+            role: 'assistant',
+            content,
+            meta: {
+              localNotice: true,
+              noticeKind: body.kind,
+              code,
+              providerId: 'genesis-local',
+              provider: 'Genesis Local',
+              model: 'voice-diagnostics',
+              freeVerified: true,
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, requestCount: 0, accuracy: 'local' }
+            }
+          });
+          telemetry.emit({
+            category: 'voice', type: 'voice.microphone.notice', title: 'Microfone indisponível informado no chat',
+            detail: content, conversationId: id, level: 'warning', meta: { code }
+          });
+          return sendJson(response, 201, { message: publicMessage(message), conversation: store.listConversations().find(item => item.id === id) });
+        }
+
         if (segments[3] === 'messages' && request.method === 'POST') {
           assertTrustedMutation(request);
           if (!allowChatRequest(request, 30)) return sendJson(response, 429, { error: { code: 'chat_rate_limit', message: 'Limite local de mensagens atingido. Aguarde um minuto.' } });
@@ -1286,6 +1339,9 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               .map(message => extractRequestedPlace(message.content))
               .find(Boolean) || null
           });
+          const localConversationResponse = !hasAttachments
+            ? resolveConversationalResponse({ query: content, conversation, language: interfaceLanguage, inputMode: inputMetadata.inputMode })
+            : null;
 
           activeConversations.add(id);
           const generationController = new AbortController();
@@ -1377,7 +1433,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               interfaceLanguage,
               turnContext: formatTurnContext(inputMetadata),
               taskContract,
-              localResponse: localContextResponse || (taskContract.toolPolicy.strategy === 'local_project_profile'
+              localResponse: localContextResponse || localConversationResponse || (taskContract.toolPolicy.strategy === 'local_project_profile'
                 ? projectStore.localReport(taskContract.outputFormat)
                 : ''),
               tools: projectToolDefinitionsFor(taskContract, { writable: projectStore.summary()?.writable === true }),
@@ -1493,7 +1549,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
                 catch { /* o erro original continua sendo a fonte canonica da resposta */ }
               }
               const failure = safeError(error);
-              const terminalContent = terminalExecutionReport(error, taskContract, failureUsage);
+              const terminalContent = terminalResponse(error, taskContract, failureUsage, interfaceLanguage);
               const terminalAssistant = await store.addMessage(id, {
                 role: 'assistant',
                 content: terminalContent,

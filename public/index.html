@@ -186,6 +186,12 @@
           <button class="mode-chip" data-mode="code" role="radio" aria-checked="false">Código</button>
           <button class="mode-chip" data-mode="fast" role="radio" aria-checked="false">Rápido</button>
         </div>
+        <div class="voice-turn-indicator" id="voiceTurnIndicator" role="status" aria-live="polite" aria-atomic="true" data-state="IDLE" hidden>
+          <span class="voice-turn-dot" id="voiceTurnDot" aria-hidden="true"></span>
+          <time class="voice-turn-timer" id="voiceTurnTimer">00:00</time>
+          <span class="voice-turn-separator" aria-hidden="true">—</span>
+          <strong id="voiceTurnLabel">Gênesis está pronto.</strong>
+        </div>
         <form class="composer" id="composerForm">
           <input id="attachmentInput" type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.txt,.md,.markdown,.csv,.json,.jsonl,.xml,.yaml,.yml,.log,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.html,.css,.scss,.sql,.sh,.ps1,.bat,.java,.c,.cc,.cpp,.h,.hpp,.go,.rs,.php,.rb,.swift,.kt,.kts,.toml,.ini,.env">
           <div class="attachment-tray" id="attachmentTray" aria-label="Arquivos prontos para envio" hidden></div>

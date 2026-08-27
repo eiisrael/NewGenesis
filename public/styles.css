@@ -422,6 +422,20 @@ kbd { font-family: inherit; font-size: 9px; color: var(--muted); border: 1px sol
 
 .composer-zone { width: 100%; min-width: 0; padding: 7px 26px 17px; overflow: visible; background: linear-gradient(to top, var(--bg) 72%, transparent); }
 .mode-row { max-width: 840px; margin: 0 auto 8px; display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }
+.voice-turn-indicator { max-width: 840px; min-height: 28px; margin: -2px auto 7px; padding: 0 10px; display: flex; align-items: center; gap: 7px; border: 1px solid color-mix(in srgb, var(--voice-state-color, var(--violet-bright)) 28%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--voice-state-color, var(--violet-bright)) 7%, var(--panel-solid)); color: var(--muted-strong); font-size: 8px; transition: border-color var(--transition), background var(--transition); }
+.voice-turn-indicator[hidden] { display: none; }
+.voice-turn-indicator strong { color: var(--text-soft); font-size: 9px; font-weight: 700; }
+.voice-turn-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--voice-state-color, var(--violet-bright)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--voice-state-color, var(--violet-bright)) 13%, transparent), 0 0 9px var(--voice-state-color, var(--violet-bright)); animation: voiceTurnPulse 1.2s ease-in-out infinite; }
+.voice-turn-timer { color: var(--voice-state-color, var(--violet-bright)); font-variant-numeric: tabular-nums; font-weight: 800; }
+.voice-turn-separator { color: var(--muted); }
+.voice-turn-indicator[data-state="IDLE"] { --voice-state-color: var(--success); }
+.voice-turn-indicator[data-state="LISTENING"] { --voice-state-color: var(--cyan); }
+.voice-turn-indicator[data-state="SPEECH_DETECTED"] { --voice-state-color: var(--success); }
+.voice-turn-indicator[data-state="TRANSCRIBING"], .voice-turn-indicator[data-state="THINKING"] { --voice-state-color: var(--violet-bright); }
+.voice-turn-indicator[data-state="SPEAKING"] { --voice-state-color: var(--amber); }
+.voice-turn-indicator[data-state="INTERRUPTING"], .voice-turn-indicator[data-state="ERROR"] { --voice-state-color: var(--danger); }
+.voice-turn-indicator[data-state="IDLE"] .voice-turn-dot, .voice-turn-indicator[data-state="ERROR"] .voice-turn-dot { animation: none; }
+@keyframes voiceTurnPulse { 50% { transform: scale(1.35); opacity: .55; } }
 .mode-chip { height: 27px; flex: 0 0 auto; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font-size: 9px; font-weight: 650; cursor: pointer; transition: var(--transition); }
 .mode-chip:hover { color: var(--text-soft); background: var(--panel-soft); }
 .mode-chip.active { color: var(--violet-bright); border-color: rgba(140,109,244,.23); background: var(--violet-soft); }

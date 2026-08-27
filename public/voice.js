@@ -17,6 +17,10 @@ const ui = {};
 let settings = readVoiceSettings();
 let composerBaseline = '';
 let runtimeStatus = { available: false, stt: {}, tts: {} };
+let indicatorStartedAt = 0;
+let indicatorTimer = null;
+let indicatorHideTimer = null;
+let lastMicrophoneNotice = { code: '', at: 0 };
 
 const browserInput = new BrowserSpeechInputEngine();
 const localInput = new LocalSpeechInputEngine();
@@ -87,7 +91,7 @@ function buildControls() {
   submitActions.innerHTML = `<button class="genesis-voice-button" id="voiceMicButton" type="button" aria-pressed="false">${iconMicrophone()}</button>`;
   sendButton.before(submitActions);
   submitActions.append(sendButton);
-  const ids = ['voiceMicButton', 'voiceOptionsButton', 'voicePopover', 'voiceConversationMode', 'voiceAutoSpeak', 'voiceAutoSend', 'voicePreferLocal', 'voiceSttEngine', 'voiceTtsEngine', 'voiceQuality', 'voicePreset', 'voiceSelect', 'voiceLocalVoiceField', 'voiceRate', 'voiceRateValue', 'voiceTestMic', 'voiceTestSpeech', 'voiceStateLabel', 'voiceStateDot', 'voiceMeter', 'voiceStatus', 'voicePrivacy', 'voiceEngineSummary'];
+  const ids = ['voiceMicButton', 'voiceOptionsButton', 'voicePopover', 'voiceConversationMode', 'voiceAutoSpeak', 'voiceAutoSend', 'voicePreferLocal', 'voiceSttEngine', 'voiceTtsEngine', 'voiceQuality', 'voicePreset', 'voiceSelect', 'voiceLocalVoiceField', 'voiceRate', 'voiceRateValue', 'voiceTestMic', 'voiceTestSpeech', 'voiceStateLabel', 'voiceStateDot', 'voiceMeter', 'voiceStatus', 'voicePrivacy', 'voiceEngineSummary', 'voiceTurnIndicator', 'voiceTurnDot', 'voiceTurnTimer', 'voiceTurnLabel'];
   for (const id of ids) ui[id] = document.querySelector(`#${id}`);
   ui.voiceMicButton.title = copy.microphone;
   ui.voiceMicButton.setAttribute('aria-label', copy.microphone);
@@ -99,6 +103,7 @@ function buildControls() {
 function bindControls() {
   ui.voiceMicButton.addEventListener('click', () => {
     composerBaseline = input.value.trim();
+    showVoiceIndicator(controller.machine.current === 'IDLE' ? 'LISTENING' : controller.machine.current);
     controller.togglePushToTalk().catch(error => renderStatus('error', error));
   });
   ui.voiceOptionsButton.addEventListener('click', event => {
@@ -179,7 +184,8 @@ function updateAvailability() {
   const browserSttAvailable = browserInput.available;
   const localSttAvailable = localInput.available;
   const anyStt = settings.preferLocal ? localSttAvailable : browserSttAvailable || localSttAvailable;
-  ui.voiceMicButton.disabled = !anyStt || composer.getAttribute('aria-busy') === 'true';
+  ui.voiceMicButton.disabled = composer.getAttribute('aria-busy') === 'true';
+  ui.voiceMicButton.dataset.available = String(anyStt);
   ui.voiceConversationMode.disabled = !anyStt;
   ui.voiceAutoSpeak.disabled = settings.preferLocal
     ? !(kokoroTts.available || chatterboxTts.available || piperTts.available)
@@ -205,7 +211,7 @@ function engineSummary() {
 function renderState(event) {
   const states = {
     IDLE: 'Pronto', LISTENING: 'Ouvindo…', SPEECH_DETECTED: 'Fala detectada', TRANSCRIBING: 'Entendendo…',
-    THINKING: 'Genesis está pensando…', SPEAKING: 'Genesis está falando…', INTERRUPTING: 'Interrompido', ERROR: 'Erro de voz'
+    THINKING: 'Gênesis está pensando…', SPEAKING: 'Gênesis está falando…', INTERRUPTING: 'Interrompido', ERROR: 'Erro de voz'
   };
   ui.voiceStateLabel.textContent = states[event.current] || event.current;
   ui.voiceStateDot.dataset.state = event.current;
@@ -214,7 +220,52 @@ function renderState(event) {
   ui.voiceMicButton.setAttribute('aria-pressed', String(listening));
   ui.voiceOptionsButton.classList.toggle('speaking', event.current === 'SPEAKING');
   ui.voiceTestSpeech.disabled = event.current === 'SPEAKING';
+  showVoiceIndicator(event.current);
   updateAvailability();
+}
+
+const VOICE_ACTION_LABELS = Object.freeze({
+  IDLE: 'Gênesis está pronto.',
+  LISTENING: 'Gênesis está ouvindo…',
+  SPEECH_DETECTED: 'Gênesis detectou sua fala…',
+  TRANSCRIBING: 'Gênesis está entendendo…',
+  THINKING: 'Gênesis está pensando…',
+  SPEAKING: 'Gênesis está falando…',
+  INTERRUPTING: 'Gênesis foi interrompido…',
+  ERROR: 'Gênesis encontrou um erro de voz.'
+});
+
+function elapsedLabel() {
+  const seconds = Math.max(0, Math.floor((performance.now() - indicatorStartedAt) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function showVoiceIndicator(state) {
+  if (!ui.voiceTurnIndicator) return;
+  clearTimeout(indicatorHideTimer);
+  clearInterval(indicatorTimer);
+  indicatorStartedAt = performance.now();
+  ui.voiceTurnIndicator.hidden = false;
+  ui.voiceTurnIndicator.dataset.state = state;
+  ui.voiceTurnLabel.textContent = VOICE_ACTION_LABELS[state] || String(state);
+  ui.voiceTurnTimer.textContent = '00:00';
+  indicatorTimer = setInterval(() => { ui.voiceTurnTimer.textContent = elapsedLabel(); }, 250);
+  if (state === 'IDLE' || state === 'ERROR') {
+    clearInterval(indicatorTimer);
+    indicatorTimer = null;
+    indicatorHideTimer = setTimeout(() => { ui.voiceTurnIndicator.hidden = true; }, state === 'ERROR' ? 7000 : 2200);
+  }
+}
+
+function announceMicrophoneFailure(error) {
+  const code = String(error?.code || '');
+  if (!code.startsWith('microphone_') && code !== 'stt_unavailable') return;
+  const now = Date.now();
+  if (lastMicrophoneNotice.code === code && now - lastMicrophoneNotice.at < 10_000) return;
+  lastMicrophoneNotice = { code, at: now };
+  document.dispatchEvent(new CustomEvent('genesis:voice-notice', {
+    detail: { kind: 'microphone_unavailable', code }
+  }));
 }
 
 function renderStatus(status, detail) {
@@ -236,6 +287,7 @@ function renderStatus(status, detail) {
     'barge-unavailable': 'Interrupção por voz indisponível neste engine.', 'chat-error': 'O chat não concluiu esta resposta.'
   };
   ui.voiceStatus.textContent = status === 'error' ? (detail?.message || 'Falha na camada de voz.') : (messages[status] || '');
+  if (status === 'error') announceMicrophoneFailure(detail);
 }
 
 function renderMeter(level) {

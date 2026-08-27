@@ -1,7 +1,16 @@
 function serverClose(server) {
   if (!server?.listening) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    server.close(error => error ? reject(error) : resolve());
+    const forceTimer = setTimeout(() => server.closeAllConnections?.(), 3_000);
+    forceTimer.unref?.();
+    server.close(error => {
+      clearTimeout(forceTimer);
+      if (error) reject(error);
+      else resolve();
+    });
+    // Navegadores podem manter conexões HTTP keep-alive mesmo depois de a aba
+    // fechar. Elas não carregam trabalho útil e não devem bloquear um restart.
+    server.closeIdleConnections?.();
   });
 }
 

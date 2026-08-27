@@ -217,12 +217,18 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, shiftKey: true, bubbles: true }));
         await new Promise(resolve => setTimeout(resolve, 0));
         const listening = mic.classList.contains('listening') && mic.getAttribute('aria-pressed') === 'true';
+        const indicatorVisible = !document.querySelector('#voiceTurnIndicator').hidden;
+        const indicatorState = document.querySelector('#voiceTurnIndicator').dataset.state;
+        const indicatorText = document.querySelector('#voiceTurnLabel').textContent;
         const transcript = [{ transcript: 'teste de voz' }]; transcript.isFinal = true;
         window.__genesisRecognition.onresult({ resultIndex: 0, results: [transcript] });
         window.__genesisRecognition.onend();
         await new Promise(resolve => setTimeout(resolve, 0));
         return {
           listening,
+          indicatorVisible,
+          indicatorState,
+          indicatorText,
           transcript: document.querySelector('#messageInput').value,
           styled: getComputedStyle(mic).width === '36px',
           noInlineVoiceStyle: !document.querySelector('style[data-genesis-voice]'),
@@ -232,7 +238,8 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
         };
       })()`);
       assert.deepEqual(result, {
-        listening: true, transcript: 'teste de voz', styled: true, noInlineVoiceStyle: true,
+        listening: true, indicatorVisible: true, indicatorState: 'LISTENING', indicatorText: 'Gênesis está ouvindo…',
+        transcript: 'teste de voz', styled: true, noInlineVoiceStyle: true,
         popoverOpen: true, micLabel: true, optionsExpanded: true
       });
 
@@ -297,22 +304,32 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
     });
 
     await withBrowser(executable, url, unsupportedVoice, async cdp => {
-      const result = await evaluate(cdp, `(() => {
+      const result = await evaluate(cdp, `(async () => {
         const input = document.querySelector('#messageInput');
         input.value = 'composer textual funcional';
         input.dispatchEvent(new Event('input', { bubbles: true }));
+        const mic = document.querySelector('#voiceMicButton');
+        mic.click();
+        for (let attempt = 0; attempt < 100 && !document.querySelector('.message.assistant'); attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
         return {
-          micDisabled: document.querySelector('#voiceMicButton').disabled,
+          micDisabled: mic.disabled,
+          micAvailable: mic.dataset.available,
           speechDisabled: document.querySelector('#voiceAutoSpeak').disabled,
           inputEnabled: !input.disabled,
           textPreserved: input.value,
           sendEnabled: !document.querySelector('#sendButton').disabled,
-          micLabel: Boolean(document.querySelector('#voiceMicButton').getAttribute('aria-label'))
+          micLabel: Boolean(mic.getAttribute('aria-label')),
+          indicatorState: document.querySelector('#voiceTurnIndicator').dataset.state,
+          notice: document.querySelector('.message.assistant .message-content')?.textContent || ''
         };
       })()`);
       assert.deepEqual(result, {
-        micDisabled: true, speechDisabled: true, inputEnabled: true,
-        textPreserved: 'composer textual funcional', sendEnabled: true, micLabel: true
+        micDisabled: false, micAvailable: 'false', speechDisabled: true, inputEnabled: true,
+        textPreserved: 'composer textual funcional', sendEnabled: true, micLabel: true,
+        indicatorState: 'ERROR',
+        notice: 'Não estou conseguindo ouvir você porque não há um mecanismo de reconhecimento de voz disponível. Verifique o microfone e instale ou habilite uma opção de reconhecimento de voz.'
       });
     });
     console.log('voice browser smoke: ok (conversation + barge-in + degraded)');

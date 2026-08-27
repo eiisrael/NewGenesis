@@ -1434,7 +1434,7 @@ function messageMeta(message) {
     <span class="engine-tag"><i></i>${escapeHtml(meta.model || 'automático')}</span>
     ${meta.freeVerified ? '<span class="free-tag">✓ FREE</span>' : ''}
     ${latency ? `<span>${latency}</span>` : ''}${saved ? `<span>${saved}</span>` : ''}
-    <small class="message-token-accounting"><strong>${compactNumber(inputTokens)}</strong> enviados · <strong>${compactNumber(responseTokens)}</strong> recebidos · ${requestCount} requisição${requestCount === 1 ? '' : 'ões'} · ${accuracy}${contextWindow ? ` · <strong>${compactNumber(remainingTokens)}</strong> livres na última janela de ${compactNumber(contextWindow)}` : ''}</small>
+    <small class="message-token-accounting"><strong>${compactNumber(inputTokens)}</strong> enviados · <strong>${compactNumber(responseTokens)}</strong> recebidos · ${requestCount} ${requestCount === 1 ? 'requisição' : 'requisições'} · ${accuracy}${contextWindow ? ` · <strong>${compactNumber(remainingTokens)}</strong> livres na última janela de ${compactNumber(contextWindow)}` : ''}</small>
   </div>`;
 }
 
@@ -2200,7 +2200,7 @@ function handleStreamEvent(event, payload) {
     const labels = { project_overview: 'inventário local', diagnose: 'diagnóstico', analysis: 'análise', change: 'alteração', fix: 'correção', answer: 'resposta' };
     const requests = Number(task.requestBudget?.limit || 0);
     const inputLimit = Number(task.requestBudget?.inputTokenLimit || 0);
-    const detail = `${labels[task.kind] || 'tarefa'} · ${task.steps?.length || 0} etapas · teto ${requests} requisição${requests === 1 ? '' : 'ões'}${inputLimit ? ` / ${compactNumber(inputLimit)} tokens de entrada` : ' · execução local'}`;
+    const detail = `${labels[task.kind] || 'tarefa'} · ${task.steps?.length || 0} etapas · teto ${requests} ${requests === 1 ? 'requisição' : 'requisições'}${inputLimit ? ` / ${compactNumber(inputLimit)} tokens de entrada` : ' · execução local'}`;
     elements.thinkingTitle.textContent = 'Planejando a tarefa';
     elements.thinkingDetail.textContent = detail;
     addTimeline('route', 'Contrato e limites definidos', detail);
@@ -2317,7 +2317,7 @@ function handleStreamEvent(event, payload) {
     const sent = Number(payload.usage?.inputTokens || 0);
     state.activeUsage = payload.usage || null;
     addTimeline('stopped', 'Resposta interrompida', requests
-      ? `A rota foi cancelada; ${requests} requisição${requests === 1 ? '' : 'ões'} e ${compactNumber(sent)} tokens enviados/estimados foram contabilizados.`
+      ? `A rota foi cancelada; ${requests} ${requests === 1 ? 'requisição' : 'requisições'} e ${compactNumber(sent)} tokens enviados/estimados foram contabilizados.`
       : 'A solicitação foi parada antes de consumir uma rota.');
   } else if (event === 'error') {
     state.streamingContent = '';
@@ -2327,7 +2327,7 @@ function handleStreamEvent(event, payload) {
     const requests = Number(payload.usage?.requestCount || 0);
     const sent = Number(payload.usage?.inputTokens || payload.usage?.sentInputTokenEstimate || 0);
     state.activeUsage = payload.usage || null;
-    addTimeline('fallback', 'Execução encerrada pelo limite seguro', `${requests} requisição${requests === 1 ? '' : 'ões'} concluída${requests === 1 ? '' : 's'} · ${compactNumber(sent)} tokens enviados/estimados · ${attempts} rota${attempts === 1 ? '' : 's'} avaliada${attempts === 1 ? '' : 's'}.`);
+    addTimeline('fallback', 'Execução encerrada pelo limite seguro', `${requests} ${requests === 1 ? 'requisição concluída' : 'requisições concluídas'} · ${compactNumber(sent)} tokens enviados/estimados · ${attempts} rota${attempts === 1 ? '' : 's'} avaliada${attempts === 1 ? '' : 's'}.`);
     throw new Error(payload.error?.message || 'Nenhuma rota gratuita está disponível neste momento.');
   }
 }
@@ -2454,6 +2454,28 @@ async function bootstrapConversation(id) {
   renderMessages();
 }
 
+async function persistVoiceNotice(detail = {}) {
+  if (detail.kind !== 'microphone_unavailable') return;
+  if (!state.current) await createConversation();
+  const conversationId = state.current.id;
+  const payload = await api(`/api/conversations/${encodeURIComponent(conversationId)}/notices`, {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: detail.kind,
+      code: String(detail.code || 'microphone_unavailable'),
+      language: state.language
+    })
+  });
+  const existing = state.current.messages.findIndex(message => message.id === payload.message?.id);
+  if (existing >= 0) state.current.messages[existing] = payload.message;
+  else if (payload.message) state.current.messages.push(payload.message);
+  const summaryIndex = state.conversations.findIndex(item => item.id === conversationId);
+  if (summaryIndex >= 0 && payload.conversation) state.conversations[summaryIndex] = payload.conversation;
+  renderMessages();
+  renderConversations();
+  scrollToBottom();
+}
+
 function autoResizeInput() {
   elements.messageInput.style.height = 'auto';
   elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, 180)}px`;
@@ -2472,6 +2494,9 @@ function applyTheme(theme) {
 }
 
 function bindEvents() {
+  document.addEventListener('genesis:voice-notice', event => {
+    persistVoiceNotice(event.detail).catch(error => toast(error.message, 'error'));
+  });
   document.addEventListener('genesis:voice-submit', event => {
     if (state.sending || !event.detail?.transcript) return event.preventDefault();
     sendMessage(event.detail.transcript, { source: 'voice', inputMetadata: event.detail.inputMetadata });

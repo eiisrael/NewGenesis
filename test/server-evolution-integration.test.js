@@ -412,9 +412,10 @@ test('chat encerra falhas com relatório final honesto sem persistir conteúdo p
   assert.equal(calls, 3);
   assert.equal(successfulRoutes, 0);
   const persisted = store.getConversation(conversation.id);
-  assert.equal(persisted.messages.length, 2, 'deve persistir o relatório terminal, nunca o texto parcial do modelo');
-  assert.match(persisted.messages[1].content, /Relatório final do Genesis/);
-  assert.match(persisted.messages[1].content, /Não está pronto/);
+  assert.equal(persisted.messages.length, 2, 'deve persistir a resposta terminal, nunca o texto parcial do modelo');
+  assert.match(persisted.messages[1].content, /Não consegui concluir esta (?:resposta|análise)/);
+  assert.match(persisted.messages[1].content, /contexto da conversa foram preservados/);
+  assert.doesNotMatch(persisted.messages[1].content, /Relatório final do Genesis|nenhuma alteração foi confirmada/);
   assert.doesNotMatch(persisted.messages[1].content, /Trecho parcial/);
   assert.equal(persisted.messages[1].meta.terminalReport, true);
   assert.equal(persisted.messages[1].meta.terminalStatus, 'failed');

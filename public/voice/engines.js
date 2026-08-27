@@ -30,7 +30,7 @@ export class BrowserSpeechInputEngine {
       }
       options.onInterim?.(`${this.finalTranscript} ${interim}`.trim());
     };
-    recognition.onerror = event => options.onError?.(engineError(`browser_stt_${event.error || 'error'}`, browserRecognitionMessage(event.error)));
+    recognition.onerror = event => options.onError?.(engineError(browserRecognitionCode(event.error), browserRecognitionMessage(event.error)));
     recognition.onend = () => {
       const transcript = this.finalTranscript.trim();
       this.recognition = null;
@@ -250,6 +250,12 @@ function engineError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function browserRecognitionCode(code) {
+  if (code === 'not-allowed' || code === 'service-not-allowed') return 'microphone_permission_denied';
+  if (code === 'audio-capture') return 'microphone_not_found';
+  return `browser_stt_${code || 'error'}`;
 }
 
 function audioOutputError(error, engine) {

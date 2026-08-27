@@ -68,3 +68,27 @@ test('composer posiciona falar uma vez junto ao envio e não mostra memória ou 
   assert.match(voice, /submitActions\.append\(sendButton\)/);
   assert.doesNotMatch(html, /memory-pill|Memória contínua|contextAwarenessCard|CONTEXTO LOCAL|Agora e aqui/);
 });
+
+test('composer mostra estados reais da conversa por voz com cronômetro acessível', () => {
+  const voice = fs.readFileSync(new URL('../public/voice.js', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const styles = fs.readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(html, /id="voiceTurnIndicator"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(html, /id="voiceTurnTimer">00:00/);
+  for (const action of ['Gênesis está ouvindo', 'Gênesis detectou sua fala', 'Gênesis está entendendo', 'Gênesis está pensando', 'Gênesis está falando', 'Gênesis foi interrompido']) {
+    assert.match(voice, new RegExp(action));
+  }
+  assert.match(voice, /elapsedLabel/);
+  assert.match(styles, /voice-turn-indicator\[data-state="ERROR"\]/);
+});
+
+test('falha real de microfone gera aviso canônico no chat', () => {
+  const voice = fs.readFileSync(new URL('../public/voice.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const server = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+  assert.match(voice, /genesis:voice-notice/);
+  assert.match(app, /persistVoiceNotice/);
+  assert.match(app, /\/notices/);
+  assert.match(server, /voice-diagnostics/);
+  assert.match(server, /Não estou conseguindo ouvir você/);
+});
