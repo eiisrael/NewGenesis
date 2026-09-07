@@ -89,10 +89,13 @@ function onlyNamedTool(tools, name) {
   return selected.length ? selected : null;
 }
 
+const SPECIAL_FILE_NAME = '(?:dockerfile|makefile|procfile|license|readme|changelog|\\.gitignore|\\.dockerignore|\\.env|\\.npmrc|\\.editorconfig)';
+
 export function projectMutationIntent(objective = '') {
   const text = normalizedObjective(objective).replace(/[`“”]/g, '"');
 
   const directFileCreation = /\b(?:crie|criar|create|adicione|adicionar|add)\s+(?:(?:um|uma|o|a|novo|nova|new)\s+)?(?:arquivo\s+|file\s+)?["']?[a-z0-9_.\/-]+\.[a-z0-9]{1,12}["']?\b/.test(text)
+    || new RegExp(`\\b(?:crie|criar|create|adicione|adicionar|add)\\s+(?:(?:um|uma|o|a|novo|nova|new)\\s+)?(?:arquivo\\s+|file\\s+)?["']?${SPECIAL_FILE_NAME}["']?(?=$|[\\s,.;:!?])`, 'i').test(text)
     || /\b(?:crie|criar|create)\b.{0,36}\b(?:arquivo|file)\b/.test(text);
   if (directFileCreation) return 'create_file';
 
