@@ -115,7 +115,8 @@ test('data e hora de uma cidade usam o fuso resolvido dessa cidade', async () =>
     weatherService: { resolvePlace: async () => ({ label: 'Caruaru, Pernambuco, Brasil', timeZone: 'America/Recife' }) }
   });
   assert.equal(result.model, 'system-clock');
-  assert.match(result.content, /23:30:00 em Caruaru, Pernambuco, Brasil/);
+  assert.match(result.content, /23:30:00.*Caruaru, Pernambuco, Brasil/);
+  assert.match(result.content, /BRT|UTC-3|GMT-3|America\/Recife/i);
 });
 
 test('pergunta de localização responde pela cidade declarada e nunca por GPS aproximado', async () => {
