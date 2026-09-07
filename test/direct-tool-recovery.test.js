@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  inferProjectDirectoryPath,
   inferProjectTargetPath,
   recoverRequiredProjectToolCall
 } from '../src/core/direct-tool-recovery.js';
@@ -15,6 +16,17 @@ function args(result) {
 test('infere um único caminho de arquivo do pedido do usuário', () => {
   assert.equal(inferProjectTargetPath(messages('Crie um index.html na pasta do projeto')), 'index.html');
   assert.equal(inferProjectTargetPath(messages('Crie `src/pages/home.html`')), 'src/pages/home.html');
+});
+
+test('infere arquivos especiais sem extensão usados em projetos reais', () => {
+  assert.equal(inferProjectTargetPath(messages('Crie um Dockerfile')), 'Dockerfile');
+  assert.equal(inferProjectTargetPath(messages('Crie um .gitignore')), '.gitignore');
+  assert.equal(inferProjectTargetPath(messages('Create a Makefile')), 'Makefile');
+});
+
+test('infere pasta explícita sem confundir a pasta do projeto com o destino', () => {
+  assert.equal(inferProjectDirectoryPath(messages('Crie uma pasta chamada componentes')), 'componentes');
+  assert.equal(inferProjectDirectoryPath(messages('Crie o diretório src/components')), 'src/components');
 });
 
 test('não escolhe caminho quando o pedido cita vários arquivos', () => {
@@ -52,6 +64,27 @@ test('recupera um único bloco HTML mesmo com uma introdução curta do modelo',
   });
   assert.equal(args(result).path, 'index.html');
   assert.equal(args(result).content, '<!doctype html><html><body>Genesis</body></html>');
+});
+
+test('recupera bloco de código para arquivo especial quando a ferramenta é inequívoca', () => {
+  const result = recoverRequiredProjectToolCall({
+    result: { content: '```dockerfile\nFROM node:22-alpine\nWORKDIR /app\n```', toolCalls: [] },
+    tools: [tool('write_project_file')],
+    messages: messages('Crie um Dockerfile')
+  });
+  assert.equal(args(result).path, 'Dockerfile');
+  assert.match(args(result).content, /^FROM node:22-alpine/m);
+});
+
+test('recupera criação de pasta determinística quando o modelo não emite JSON', () => {
+  const result = recoverRequiredProjectToolCall({
+    result: { content: 'Vou criar a pasta.', toolCalls: [] },
+    tools: [tool('create_project_directory')],
+    messages: messages('Crie uma pasta chamada componentes')
+  });
+  assert.equal(result.finishReason, 'tool_calls');
+  assert.equal(result.toolCalls[0].function.name, 'create_project_directory');
+  assert.deepEqual(args(result), { path: 'componentes' });
 });
 
 test('não transforma prosa comum em conteúdo de arquivo', () => {
