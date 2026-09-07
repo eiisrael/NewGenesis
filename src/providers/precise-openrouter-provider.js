@@ -1,7 +1,7 @@
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { ResilientOpenRouterProvider } from './resilient-openrouter-provider.js';
 import { ProviderError } from '../core/errors.js';
-import { recoverRequiredProjectToolCall } from '../core/direct-tool-recovery.js';
+import { recoverRequiredProjectToolCall } from '../core/project-tool-command-recovery.js';
 import {
   allowParallelProjectToolCalls,
   isProjectMutationTool,
@@ -49,6 +49,22 @@ function successfulReadEvidence(messages = []) {
   return count;
 }
 
+function emptyFileReadPath(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'tool' || message?.name !== 'read_project_file') continue;
+    let result = null;
+    try { result = JSON.parse(String(message.content || '{}')); } catch { continue; }
+    if (result?.ok !== true || typeof result.content !== 'string') continue;
+    const startsAtBeginning = result.startLine === 1 || result.startCharacter === 0;
+    const noContinuation = result.nextStartLine == null && result.nextStartCharacter == null;
+    if (startsAtBeginning && noContinuation && result.truncated !== true && result.content === '') {
+      return String(result.path || '');
+    }
+  }
+  return '';
+}
+
 function hasToolAttempt(messages = [], name = '') {
   return messages.some(message => message?.role === 'tool' && message?.name === name);
 }
@@ -86,6 +102,15 @@ export function agenticToolsForMessages(tools = [], messages = []) {
     const reads = tools.filter(tool => isProjectReadTool(tool));
     return reads.length ? reads : tools;
   }
+
+  // Uma leitura integral que confirma arquivo vazio já fornece todo o contexto
+  // necessário. Forçar replace_project_text nesse ponto é impossível porque a
+  // substituição exige old_text não vazio; a ação correta e econômica é gravação.
+  if (emptyFileReadPath(messages)) {
+    const writes = tools.filter(tool => tool?.function?.name === 'write_project_file');
+    if (writes.length) return writes;
+  }
+
   if (evidence < 2) return tools;
   const mutations = preferredProjectMutationTools(tools, {
     objective,
