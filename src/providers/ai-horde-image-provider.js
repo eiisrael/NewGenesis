@@ -1,4 +1,5 @@
 import { ProviderError } from '../core/errors.js';
+import { parseImageGenerationRequest } from '../core/image-request.js';
 
 const ANONYMOUS_KEY = '0000000000';
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -87,6 +88,15 @@ function imagePayload(value) {
   });
 }
 
+function sourceImage(value) {
+  const dataUrl = String(value || '').trim();
+  const match = dataUrl.match(/^data:image\/(?:png|jpeg|webp|gif);base64,([a-zA-Z0-9+/]*={0,2})$/i);
+  if (!match) return '';
+  const buffer = Buffer.from(match[1], 'base64');
+  if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) return '';
+  return match[1];
+}
+
 export class AIHordeImageProvider {
   constructor(options = {}) {
     this.id = 'aihorde-image';
@@ -167,38 +177,52 @@ export class AIHordeImageProvider {
   }
 
   async generateImage({ prompt, signal, onAttempt = () => {} }) {
-    const normalizedPrompt = String(prompt || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const request = parseImageGenerationRequest(prompt);
+    const normalizedPrompt = String(request.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
     if (!normalizedPrompt) {
       throw new ProviderError('Descreva a imagem que o Gênesis deve criar.', {
         providerId: this.id, category: 'request', code: 'empty_image_prompt', retryable: false
+      });
+    }
+    const reference = request.references.length ? sourceImage(request.references[0]) : '';
+    if (request.operation === 'edit' && !reference) {
+      throw new ProviderError('A imagem de referência não pôde ser preparada para edição.', {
+        providerId: this.id, category: 'request', code: 'community_image_invalid_reference', retryable: false
       });
     }
 
     const started = Date.now();
     let requestId = null;
     const models = await this.availableModels(signal);
-    onAttempt({ id: 'community-auto', name: 'Modelos comunitários disponíveis' }, 1);
+    onAttempt({ id: 'community-auto', name: request.operation === 'edit' ? 'Modelos comunitários img2img' : 'Modelos comunitários disponíveis' }, 1);
     try {
+      const params = {
+        n: 1, width: 512, height: 512, steps: request.operation === 'edit' ? 24 : 20,
+        cfg_scale: 7, sampler_name: 'k_euler_a'
+      };
+      if (request.operation === 'edit') params.denoising_strength = 0.62;
+      const body = {
+        prompt: normalizedPrompt,
+        params,
+        nsfw: false,
+        trusted_workers: false,
+        validated_backends: true,
+        slow_workers: true,
+        extra_slow_workers: true,
+        censor_nsfw: true,
+        r2: false,
+        shared: false,
+        replacement_filter: true,
+        allow_downgrade: true,
+        models: models.length ? models : ['stable_diffusion']
+      };
+      if (reference) {
+        body.source_image = reference;
+        body.source_processing = 'img2img';
+      }
       const queued = await this.requestJson('/generate/async', {
         method: 'POST',
-        body: JSON.stringify({
-          prompt: normalizedPrompt,
-          params: {
-            n: 1, width: 512, height: 512, steps: 20,
-            cfg_scale: 7, sampler_name: 'k_euler_a'
-          },
-          nsfw: false,
-          trusted_workers: false,
-          validated_backends: true,
-          slow_workers: true,
-          extra_slow_workers: true,
-          censor_nsfw: true,
-          r2: false,
-          shared: false,
-          replacement_filter: true,
-          allow_downgrade: true,
-          models: models.length ? models : ['stable_diffusion']
-        })
+        body: JSON.stringify(body)
       }, signal);
       requestId = String(queued.id || '');
       if (!/^[a-zA-Z0-9-]{8,80}$/.test(requestId)) {
@@ -232,12 +256,15 @@ export class AIHordeImageProvider {
         const image = imagePayload(generation.img);
         const model = String(generation.model || 'modelo comunitário');
         return {
-          content: 'Imagem criada pelo Gênesis com uma rota remota gratuita.',
+          content: request.operation === 'edit'
+            ? 'Imagem editada pelo Gênesis usando a referência enviada e uma rota comunitária gratuita.'
+            : 'Imagem criada pelo Gênesis com uma rota remota gratuita.',
           generatedImages: [{
-            name: `genesis-${Date.now()}.${image.extension}`,
+            name: `genesis-${request.operation === 'edit' ? 'edit' : 'image'}-${Date.now()}.${image.extension}`,
             mimeType: image.mimeType,
             dataUrl: `data:${image.mimeType};base64,${image.buffer.toString('base64')}`
           }],
+          imageOperation: request.operation,
           model,
           resolvedModel: model,
           resolvedProvider: this.name,
