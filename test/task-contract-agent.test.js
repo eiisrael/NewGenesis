@@ -42,3 +42,25 @@ test('mudança ampla recebe orçamento maior sem depender do domínio do projeto
   assert.equal(contract.requestBudget.reserveFinal, 1);
   assert.equal(contract.toolPolicy.maxExplorationBatches, 4);
 });
+
+test('criação explícita de arquivo elimina busca e expõe somente escrita', () => {
+  const contract = createTaskContract('Crie um index.html', {
+    project: { ...project, fileCount: 0 }
+  });
+  assert.equal(contract.kind, 'change');
+  assert.equal(contract.toolPolicy.strategy, 'direct_mutation');
+  assert.equal(contract.toolPolicy.mutationIntent, 'create_file');
+  assert.deepEqual(contract.toolPolicy.allowed, ['write_project_file']);
+  assert.equal(contract.toolPolicy.searchFirst, false);
+  assert.equal(contract.requestBudget.limit, 3);
+  assert.equal(contract.requestBudget.deadlineMs, 60_000);
+});
+
+test('adicionar conteúdo em arquivo existente continua sendo edição com leitura', () => {
+  const contract = createTaskContract('Adicione um botão no index.html', { project });
+  assert.equal(contract.toolPolicy.strategy, 'bounded_agent');
+  assert.equal(contract.toolPolicy.mutationIntent, 'edit');
+  assert.equal(contract.toolPolicy.searchFirst, true);
+  assert.ok(contract.toolPolicy.allowed.includes('search_project'));
+  assert.ok(contract.toolPolicy.allowed.includes('replace_project_text'));
+});
