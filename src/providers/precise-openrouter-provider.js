@@ -6,6 +6,7 @@ import {
   isProjectMutationTool,
   isProjectReadTool,
   preferredProjectMutationTools,
+  projectMutationNeedsExploration,
   projectToolCallRequired,
   projectToolChoice,
   projectToolPhase
@@ -57,16 +58,25 @@ function latestUserRequest(messages = []) {
 export function agenticToolsForMessages(tools = [], messages = []) {
   if (projectToolPhase(tools) !== 'mixed') return tools;
   const evidence = successfulReadEvidence(messages);
+  const objective = latestUserRequest(messages);
+
+  // Criar um arquivo/pasta novo não depende de encontrar conteúdo preexistente.
+  // Forçar search_project aqui criava um deadlock: busca vazia -> zero evidência ->
+  // nova busca até esgotar o orçamento. Nesses pedidos a primeira ação já é escrita.
+  if (evidence === 0 && objective && !projectMutationNeedsExploration(objective)) {
+    const mutations = preferredProjectMutationTools(tools, { objective, hasReadEvidence: false });
+    return mutations.length ? mutations : tools;
+  }
+
   if (evidence === 0) {
-    // A primeira rodada nunca escreve. Modelos com tool calling nativo recebem
-    // search_project como escolha forçada; modelos legados ainda podem devolver
-    // read_file e ter essa chamada recuperada com segurança.
+    // Edições de conteúdo existente continuam search/read-first para preservar código
+    // não relacionado e evitar reescritas destrutivas.
     const reads = tools.filter(tool => isProjectReadTool(tool));
     return reads.length ? reads : tools;
   }
   if (evidence < 2) return tools;
   const mutations = preferredProjectMutationTools(tools, {
-    objective: latestUserRequest(messages),
+    objective,
     hasReadEvidence: true
   });
   return mutations.length ? mutations : tools;
@@ -113,8 +123,12 @@ export function prepareAgenticToolRequest(body = {}) {
   const forceAgentAction = hasToolResult
     && phase === 'mixed'
     && names.some(name => isProjectMutationTool(name));
+  const provider = body.provider && typeof body.provider === 'object'
+    ? { ...body.provider, require_parameters: false }
+    : body.provider;
   return {
     ...body,
+    ...(provider ? { provider } : {}),
     tool_choice: forceInitialSearch
       ? { type: 'function', function: { name: 'search_project' } }
       : forceAgentAction
@@ -133,6 +147,17 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
   setApiKey(value) {
     super.setApiKey(value);
     this.activeTaskFingerprints?.clear();
+  }
+
+  candidate(model, catalog, mode, taskProfile = {}) {
+    const candidate = super.candidate(model, catalog, mode, taskProfile);
+    // O roteador gratuito pode escolher modelos heterogêneos. Para ele, o protocolo
+    // textual validado do Genesis é mais robusto do que exigir tool calling nativo
+    // de todas as rotas possíveis. Modelos gratuitos específicos continuam nativos.
+    if (model === 'openrouter/free') {
+      return { ...candidate, supportsTools: false, toolMode: 'text' };
+    }
+    return candidate;
   }
 
   markSuccess(value = {}) {
