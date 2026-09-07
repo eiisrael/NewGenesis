@@ -43,7 +43,7 @@ export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
     path: { type: 'string', description: 'Caminho relativo do arquivo.' },
     content: { type: 'string', description: 'Conteúdo completo que será gravado.' }
   }, ['path', 'content']),
-  functionTool('replace_project_text', 'Edite um trecho exato de um arquivo existente. Prefira esta ferramenta para mudanças localizadas: reduz risco, tokens e preserva código não relacionado.', {
+  functionTool('replace_project_text', 'Edite um trecho exato de um arquivo existente. Prefira esta ferramenta para mudanças localizadas: reduz risco, tokens e preserva código não relacionado. Se o trecho tiver mudado no disco, a falha retorna um recorte atual para você corrigir old_text e tentar novamente sem reabrir uma exploração ampla.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo existente.' },
     old_text: { type: 'string', minLength: 1, maxLength: 32000, description: 'Trecho atual exato que será substituído.' },
     new_text: { type: 'string', maxLength: 32000, description: 'Novo trecho que entrará no lugar.' },
@@ -206,6 +206,53 @@ async function contextualizeMatches(projectStore, matches) {
   return output;
 }
 
+function recoveryTerms(value) {
+  const source = String(value || '').normalize('NFKC');
+  const identifiers = source.match(/[A-Za-z_$À-ÿ][A-Za-z0-9_$À-ÿ.-]{3,}/g) || [];
+  return [...new Set(identifiers)]
+    .filter(term => !/^(?:const|let|var|function|return|class|style|color|width|height|true|false|null|undefined)$/i.test(term))
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 8);
+}
+
+async function replacementRecoveryContext(projectStore, args) {
+  const source = await projectStore.readText(args.path);
+  const lines = String(source || '').split(/\r?\n/);
+  const oldLines = String(args.old_text || '').split(/\r?\n/).map(line => line.trim()).filter(line => line.length >= 6);
+  let targetIndex = -1;
+
+  for (const candidate of oldLines.sort((left, right) => right.length - left.length).slice(0, 8)) {
+    const probe = candidate.length > 160 ? candidate.slice(0, 160) : candidate;
+    const found = lines.findIndex(line => line.includes(probe));
+    if (found >= 0) { targetIndex = found; break; }
+  }
+
+  if (targetIndex < 0) {
+    const terms = recoveryTerms(args.old_text);
+    let bestScore = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const score = terms.reduce((sum, term) => sum + (lines[index].includes(term) ? Math.min(8, term.length) : 0), 0);
+      if (score > bestScore) { bestScore = score; targetIndex = index; }
+    }
+  }
+
+  if (targetIndex < 0) targetIndex = 0;
+  const startLine = Math.max(1, targetIndex + 1 - 12);
+  const endLine = Math.min(lines.length, targetIndex + 1 + 18);
+  const raw = lines.slice(startLine - 1, endLine)
+    .map((line, index) => `${startLine + index}: ${line}`)
+    .join('\n');
+  const sanitized = sanitizeModelText(raw, { maxCharacters: 4_500, maxLineCharacters: 1_500 });
+  return {
+    path: args.path,
+    startLine,
+    endLine,
+    totalLines: lines.length,
+    content: sanitized.text,
+    instruction: 'O arquivo mudou desde a leitura anterior. Use este recorte atual como fonte da verdade, ajuste old_text para um trecho exato e tente replace_project_text novamente. Não recomece a exploração do projeto.'
+  };
+}
+
 export class ProjectToolExecutor {
   constructor({ projectStore, permissionStore, approvalManager }) {
     this.projectStore = projectStore;
@@ -250,8 +297,23 @@ export class ProjectToolExecutor {
       return { ok: true, approvalWaitMs: operation.approvalWaitMs || 0, ...result };
     } catch (error) {
       const message = error?.message || 'Falha ao executar a ferramenta.';
-      onEvent('tool_failed', { ...operation, message });
-      return { ok: false, approvalWaitMs: operation.approvalWaitMs || 0, error: message, code: error?.code || 'project_tool_error' };
+      let recovery = null;
+      if (name === 'replace_project_text' && error?.code === 'project_replacement_mismatch') {
+        try { recovery = await replacementRecoveryContext(this.projectStore, args); }
+        catch { recovery = null; }
+      }
+      onEvent('tool_failed', { ...operation, message, recovery: recovery ? { path: recovery.path, startLine: recovery.startLine, endLine: recovery.endLine } : null });
+      return {
+        ok: false,
+        approvalWaitMs: operation.approvalWaitMs || 0,
+        error: message,
+        code: error?.code || 'project_tool_error',
+        ...(recovery ? {
+          retryable: true,
+          recovery,
+          summary: `${message} O Genesis releu somente a região relevante do arquivo; corrija old_text com o recorte atual e tente a substituição novamente.`
+        } : {})
+      };
     }
   }
 
