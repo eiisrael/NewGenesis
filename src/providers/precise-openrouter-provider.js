@@ -49,6 +49,10 @@ function successfulReadEvidence(messages = []) {
   return count;
 }
 
+function hasToolAttempt(messages = [], name = '') {
+  return messages.some(message => message?.role === 'tool' && message?.name === name);
+}
+
 function latestUserRequest(messages = []) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role === 'user') return textContent(messages[index].content);
@@ -57,7 +61,14 @@ function latestUserRequest(messages = []) {
 }
 
 export function agenticToolsForMessages(tools = [], messages = []) {
-  if (projectToolPhase(tools) !== 'mixed') return tools;
+  const suppliedPhase = projectToolPhase(tools);
+
+  // Uma verificação que já foi executada não deve ser chamada em loop só porque
+  // test/lint/build retornou erro. A evidência da tentativa permanece no contexto;
+  // a rodada seguinte sintetiza a limitação sem repetir o mesmo comando.
+  if (suppliedPhase === 'verification' && hasToolAttempt(messages, 'run_project_check')) return [];
+  if (suppliedPhase !== 'mixed') return tools;
+
   const evidence = successfulReadEvidence(messages);
   const objective = latestUserRequest(messages);
 
