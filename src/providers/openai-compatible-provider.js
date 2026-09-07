@@ -2,6 +2,7 @@ import { BaseProvider } from './base-provider.js';
 import { assertFreeOpenRouterModels, isFreeOpenRouterModel } from '../core/policy.js';
 import { ProviderError } from '../core/errors.js';
 import { estimateRequestTokens } from '../core/context-engine.js';
+import { allowParallelProjectToolCalls, projectToolChoice } from '../core/project-tool-policy.js';
 
 function textContent(content) {
   if (typeof content === 'string') return content;
@@ -162,9 +163,6 @@ export class OpenAICompatibleProvider extends BaseProvider {
     this.health.failureCount = 0;
     this.health.cooldownUntil = 0;
     this.health.lastError = null;
-    // Limpa também o cooldown de TODAS as rotas individuais (no Resilient),
-    // senão rotas que falharam antes continuam bloqueadas por até 90s mesmo
-    // depois de uma chave nova ter sido configurada.
     if (typeof this.resetAllRoutes === 'function') this.resetAllRoutes();
   }
 
@@ -252,7 +250,6 @@ export class OpenAICompatibleProvider extends BaseProvider {
     let catalog = [];
     try { catalog = await this.models({ signal: options.signal }); } catch (error) {
       if (error?.code === 'request_cancelled') throw error;
-      /* usa fallback seguro */
     }
     if (this.isOpenRouter) {
       if (this.selectionMode === 'manual') {
@@ -305,12 +302,18 @@ export class OpenAICompatibleProvider extends BaseProvider {
     const body = { model: candidate.model, messages, temperature, max_tokens: maxOutputTokens, stream: streaming };
     if (tools.length) {
       body.tools = tools;
-      body.tool_choice = 'auto';
-      body.parallel_tool_calls = candidate.supportedParameters?.includes('parallel_tool_calls') === true;
+      body.tool_choice = projectToolChoice(tools);
+      body.parallel_tool_calls = allowParallelProjectToolCalls(
+        tools,
+        candidate.supportedParameters?.includes('parallel_tool_calls') === true
+      );
     }
     if (this.isOpenRouter) {
       body.session_id = sessionId;
-      body.provider = { allow_fallbacks: candidate.model === 'openrouter/free', require_parameters: false };
+      body.provider = {
+        allow_fallbacks: candidate.model === 'openrouter/free',
+        require_parameters: tools.length > 0
+      };
       if (messagesContain(messages, 'file')) {
         body.plugins = [{ id: 'file-parser', pdf: { engine: 'cloudflare-ai' } }];
       }
@@ -419,8 +422,6 @@ export class OpenAICompatibleProvider extends BaseProvider {
     });
     const attempts = [];
     let partialUsage = null;
-    // Uma chamada de geração por invocação: qualquer fallback adicional deve
-    // voltar ao orquestrador para permanecer visível e contabilizado.
     for (const model of models.slice(0, 1)) {
       if (signal?.aborted) throw Object.assign(new Error('Solicitação interrompida pelo usuário.'), { code: 'request_cancelled', category: 'cancelled' });
       onAttempt(model, attempts.length + 1);
