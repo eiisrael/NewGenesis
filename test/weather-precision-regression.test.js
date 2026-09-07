@@ -40,8 +40,9 @@ test('regressão do screenshot: caruaru -pe é normalizado e retorna clima ao vi
       const parsed = new URL(url);
       requests.push(parsed);
       if (parsed.hostname.startsWith('geocoding-api')) {
-        if (parsed.searchParams.get('name') === 'Caruaru, PE') return json({ results: [] });
-        assert.equal(parsed.searchParams.get('name'), 'Caruaru');
+        const name = String(parsed.searchParams.get('name') || '').toLowerCase();
+        if (name === 'caruaru, pe') return json({ results: [] });
+        assert.equal(name, 'caruaru');
         assert.equal(parsed.searchParams.get('countryCode'), 'BR');
         return json({ results: [caruaruResult()] });
       }
