@@ -44,7 +44,7 @@ function filePathCandidates(value) {
 }
 
 function directoryPathCandidates(value) {
-  const text = String(value || '');
+  const text = String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
   const matches = [];
   const patterns = [
     /\b(?:pasta|diretorio|folder|directory)\s+(?:chamad[ao]\s+|named\s+)?[`"']?([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*)[`"']?/gi,
