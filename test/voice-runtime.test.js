@@ -77,20 +77,23 @@ async function fakeVoiceData(components = []) {
   };
   if (components.includes('piper')) {
     await Promise.all([
-      touch('venv-piper/Scripts/python.exe'),
+      touch('venv-piper/Scripts/python.exe'), touch('venv-piper/bin/python'),
       touch('models/piper/pt_BR-cadu-medium.onnx'),
       touch('models/piper/pt_BR-cadu-medium.onnx.json')
     ]);
   }
   if (components.includes('kokoro')) {
     await Promise.all([
-      touch('venv-kokoro/Scripts/python.exe'), touch('models/kokoro/kokoro-v1_0.pth'), touch('models/kokoro/config.json'),
+      touch('venv-kokoro/Scripts/python.exe'), touch('venv-kokoro/bin/python'),
+      touch('models/kokoro/kokoro-v1_0.pth'), touch('models/kokoro/config.json'),
       touch('models/kokoro/voices/pf_dora.pt'), touch('models/kokoro/voices/pm_alex.pt'), touch('models/kokoro/voices/pm_santa.pt')
     ]);
   }
   if (components.includes('whisper')) {
     await Promise.all([
-      touch('bin/whisper-cli.exe'), touch('bin/whisper-server.exe'), touch('models/whisper/ggml-base-q5_1.bin')
+      touch('bin/whisper-cli.exe'), touch('bin/whisper-cli'),
+      touch('bin/whisper-server.exe'), touch('bin/whisper-server'),
+      touch('models/whisper/ggml-base-q5_1.bin')
     ]);
   }
   return dataDir;
