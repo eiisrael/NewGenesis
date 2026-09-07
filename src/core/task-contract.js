@@ -13,8 +13,8 @@ const normalize = value => String(value || '')
 
 const ANALYSIS = /\b(analise|analisar|examine|examinar|inspecione|inspecionar|revise|revisar|avalie|avaliar|audit|review|analyze|inspect|explain|explique)\b/;
 const READ_ONLY_LEAD = /^(?:por favor[, ]+)?(?:analise|analisar|examine|examinar|inspecione|inspecionar|revise|revisar|avalie|avaliar|audit|review|analyze|inspect|explain|explique|descreva|descrever|como|por que|porque|qual|quais|o que)\b/;
-const PORTUGUESE_IMPERATIVE = /\b(?:crie|adicione|altere|atualize|corrija|conserte|implemente|remova|mova|renomeie|ajuste|edite|refatore|apague|exclua|resolva|aplique|melhore|otimize|arrume|organize|simplifique|modernize|migra|migre)\b/;
-const PORTUGUESE_ACTION = /(?:criar|adicionar|alterar|atualizar|corrigir|consertar|implementar|remover|deletar|mover|renomear|ajustar|editar|refatorar|apagar|excluir|resolver|aplicar|melhorar|otimizar|arrumar|organizar|simplificar|modernizar|migrar)/;
+const PORTUGUESE_IMPERATIVE = /\b(?:crie|adicione|altere|atualize|corrija|conserte|implemente|remova|mova|renomeie|ajuste|edite|refatore|apague|exclua|resolva|aplique|melhore|otimize|arrume|organize|simplifique|modernize|migra|migre|coloque|insira|inclua|preencha|ponha)\b/;
+const PORTUGUESE_ACTION = /(?:criar|adicionar|alterar|atualizar|corrigir|consertar|implementar|remover|deletar|mover|renomear|ajustar|editar|refatorar|apagar|excluir|resolver|aplicar|melhorar|otimizar|arrumar|organizar|simplificar|modernizar|migrar|colocar|inserir|incluir|preencher|por)/;
 const PORTUGUESE_ACTION_NOUN = /(?:correc(?:ao|oes)|ajustes?|alteracoes?|mudancas?|implementacao|refatoracao|otimizacao|melhorias?|migracao|fix)/;
 const DO_ACTION = new RegExp(`^\\s*(?:por favor[, ]+)?faca\\s+(?:(?:os?|as?|uma?)\\s+)?${PORTUGUESE_ACTION_NOUN.source}\\b`);
 const FOLLOW_UP_DO_ACTION = new RegExp(`(?:[.!?;,]\\s*|\\b(?:e|depois|entao|tambem)\\s+)(?:por favor\\s+)?faca\\s+(?:(?:os?|as?|uma?)\\s+)?${PORTUGUESE_ACTION_NOUN.source}\\b`);
