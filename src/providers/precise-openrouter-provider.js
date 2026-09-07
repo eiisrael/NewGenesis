@@ -1,6 +1,7 @@
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { ResilientOpenRouterProvider } from './resilient-openrouter-provider.js';
 import { ProviderError } from '../core/errors.js';
+import { recoverRequiredProjectToolCall } from '../core/direct-tool-recovery.js';
 import {
   allowParallelProjectToolCalls,
   isProjectMutationTool,
@@ -220,13 +221,16 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
     const suppliedTools = input.tools || [];
     const suppliedPhase = projectToolPhase(suppliedTools);
     const tools = agenticToolsForMessages(suppliedTools, input.messages || []);
-    const enoughExploration = suppliedPhase === 'mixed' && projectToolPhase(tools) === 'mutation';
     const phase = projectToolPhase(tools);
     const required = projectToolActionRequired(suppliedTools, tools);
     this.activeTaskFingerprints.set(key, fingerprint);
     const state = this.sessionState(key);
     const previousMutationCount = state.mutations;
-    const suppressLegacyMutationGuard = suppliedPhase === 'mixed' && !enoughExploration;
+
+    // O guard legado do Resilient não deve encerrar a resposta antes da camada
+    // Precise recuperar formatos seguros (HTML bruto, JSON de argumentos etc.).
+    // A validação obrigatória permanece nesta camada e só aceita tool call real.
+    const suppressLegacyMutationGuard = required;
 
     try {
       if (suppressLegacyMutationGuard && state.mutations === 0) state.mutations = 1;
@@ -245,7 +249,11 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
         };
       }
 
-      const result = await super.generate(request);
+      let result = await super.generate(request);
+      if (required && !result.toolCalls?.length) {
+        result = recoverRequiredProjectToolCall({ result, tools, messages: request.messages || [] });
+      }
+
       if (required && !result.toolCalls?.length) {
         const error = new ProviderError(
           phase === 'verification'
