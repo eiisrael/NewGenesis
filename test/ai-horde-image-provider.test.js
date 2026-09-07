@@ -11,7 +11,7 @@ function response(payload, status = 200) {
   });
 }
 
-test('gera imagem remota anônima sem ativar rota paga ou baixar modelo', async () => {
+test('gera imagem remota anônima com preset de qualidade sem ativar rota paga ou baixar modelo', async () => {
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url, options });
@@ -26,8 +26,11 @@ test('gera imagem remota anônima sem ativar rota paga ou baixar modelo', async 
   const submitted = JSON.parse(submittedCall.options.body);
 
   assert.equal(submittedCall.options.headers.apikey, '0000000000');
-  assert.equal(submitted.params.width, 512);
-  assert.equal(submitted.params.height, 512);
+  assert.equal(submitted.params.width, 768);
+  assert.equal(submitted.params.height, 768);
+  assert.equal(submitted.params.steps, 26);
+  assert.equal(submitted.params.sampler_name, 'k_dpmpp_2m');
+  assert.equal(submitted.params.karras, true);
   assert.equal(submitted.nsfw, false);
   assert.equal(submitted.trusted_workers, false);
   assert.equal(submitted.validated_backends, true);
