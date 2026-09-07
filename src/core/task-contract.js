@@ -13,8 +13,8 @@ const normalize = value => String(value || '')
 
 const ANALYSIS = /\b(analise|analisar|examine|examinar|inspecione|inspecionar|revise|revisar|avalie|avaliar|audit|review|analyze|inspect|explain|explique)\b/;
 const READ_ONLY_LEAD = /^(?:por favor[, ]+)?(?:analise|analisar|examine|examinar|inspecione|inspecionar|revise|revisar|avalie|avaliar|audit|review|analyze|inspect|explain|explique|descreva|descrever|como|por que|porque|qual|quais|o que)\b/;
-const PORTUGUESE_IMPERATIVE = /\b(?:crie|adicione|altere|atualize|corrija|conserte|implemente|remova|mova|renomeie|ajuste|edite|refatore|apague|exclua|resolva|aplique|melhore|otimize|arrume|organize|simplifique|modernize|migra|migre|coloque|insira|inclua|preencha|ponha)\b/;
-const PORTUGUESE_ACTION = /(?:criar|adicionar|alterar|atualizar|corrigir|consertar|implementar|remover|deletar|mover|renomear|ajustar|editar|refatorar|apagar|excluir|resolver|aplicar|melhorar|otimizar|arrumar|organizar|simplificar|modernizar|migrar|colocar|inserir|incluir|preencher|por)/;
+const PORTUGUESE_IMPERATIVE = /\b(?:crie|adicione|altere|atualize|corrija|conserte|implemente|remova|mova|renomeie|ajuste|edite|refatore|apague|exclua|resolva|aplique|melhore|otimize|arrume|organize|simplifique|modernize|migra|migre)\b/;
+const PORTUGUESE_ACTION = /(?:criar|adicionar|alterar|atualizar|corrigir|consertar|implementar|remover|deletar|mover|renomear|ajustar|editar|refatorar|apagar|excluir|resolver|aplicar|melhorar|otimizar|arrumar|organizar|simplificar|modernizar|migrar)/;
 const PORTUGUESE_ACTION_NOUN = /(?:correc(?:ao|oes)|ajustes?|alteracoes?|mudancas?|implementacao|refatoracao|otimizacao|melhorias?|migracao|fix)/;
 const DO_ACTION = new RegExp(`^\\s*(?:por favor[, ]+)?faca\\s+(?:(?:os?|as?|uma?)\\s+)?${PORTUGUESE_ACTION_NOUN.source}\\b`);
 const FOLLOW_UP_DO_ACTION = new RegExp(`(?:[.!?;,]\\s*|\\b(?:e|depois|entao|tambem)\\s+)(?:por favor\\s+)?faca\\s+(?:(?:os?|as?|uma?)\\s+)?${PORTUGUESE_ACTION_NOUN.source}\\b`);
@@ -22,6 +22,10 @@ const ENGLISH_ACTION = /(?:fix|create|update|change|implement|remove|delete|move
 const ACTION_VERB = new RegExp(`(?:${PORTUGUESE_ACTION.source}|${ENGLISH_ACTION.source})`);
 const ACTION_LEAD = new RegExp(`^(?:por favor[, ]+)?(?:${ACTION_VERB.source})\\b|\\b(?:quero|preciso|pode|poderia|deve|vamos|favor|need you to|want you to|can you|could you|please)\\s+(?:${ACTION_VERB.source})\\b`);
 const FOLLOW_UP_ACTION = new RegExp(`(?:[.!?;,]\\s*|\\b(?:e|depois|entao|tambem)\\s+)(?:por favor\\s+)?(?:faca\\s+)?(?:${PORTUGUESE_IMPERATIVE.source}|${PORTUGUESE_ACTION.source}\\b)|\\b(?:and|then|also)\\s+(?:please\\s+)?${ENGLISH_ACTION.source}\\b`);
+const PROJECT_CONTENT_VERB = '(?:coloque|colocar|insira|inserir|inclua|incluir|preencha|preencher|ponha|escreva|escrever)';
+const PROJECT_CONTENT_TARGET = '(?:arquivo|file|[a-z0-9_.-]+(?:\\/[a-z0-9_.-]+)*\\.[a-z0-9]{1,12})';
+const PROJECT_CONTENT_ACTION = new RegExp(`\\b${PROJECT_CONTENT_VERB}\\b[^.!?\\n]{0,80}\\b${PROJECT_CONTENT_TARGET}\\b|\\b${PROJECT_CONTENT_TARGET}\\b[^.!?\\n]{0,80}\\b${PROJECT_CONTENT_VERB}\\b`);
+const FOLLOW_UP_PROJECT_CONTENT_ACTION = new RegExp(`(?:[.!?;,]\\s*|\\b(?:e|depois|entao|tambem)\\s+)[^.!?\\n]{0,32}\\b${PROJECT_CONTENT_VERB}\\b[^.!?\\n]{0,80}\\b${PROJECT_CONTENT_TARGET}\\b`);
 const DELETE_IMPERATIVE = /\b(?:remova|apague|exclua)\b/;
 const DELETE_ACTION = /(?:remover|deletar|apagar|excluir|remove|delete)/;
 const DELETE_LEAD = new RegExp(`^(?:por favor[, ]+)?(?:${DELETE_ACTION.source})\\b|\\b(?:quero|preciso|pode|poderia|deve|vamos|favor|need you to|want you to|can you|could you|please)\\s+(?:${DELETE_ACTION.source})\\b`);
@@ -44,9 +48,9 @@ function outputFormat(text) {
 }
 
 function requestsMutation(text) {
-  if (ANALYSIS.test(text) && (FOLLOW_UP_ACTION.test(text) || FOLLOW_UP_DO_ACTION.test(text))) return true;
+  if (ANALYSIS.test(text) && (FOLLOW_UP_ACTION.test(text) || FOLLOW_UP_DO_ACTION.test(text) || FOLLOW_UP_PROJECT_CONTENT_ACTION.test(text))) return true;
   if (READ_ONLY_LEAD.test(text)) return false;
-  return PORTUGUESE_IMPERATIVE.test(text) || ACTION_LEAD.test(text) || DO_ACTION.test(text);
+  return PORTUGUESE_IMPERATIVE.test(text) || ACTION_LEAD.test(text) || DO_ACTION.test(text) || PROJECT_CONTENT_ACTION.test(text);
 }
 
 function requestsDeletion(text) {
