@@ -97,23 +97,29 @@ test('OpenRouter envia input_references somente para modelo free compatível', a
   assert.equal(body.resolution, '1K');
 });
 
-test('AI Horde usa source_image e img2img no fallback de edição', async () => {
+test('AI Horde usa img2img, prompt negativo e preset de alta qualidade no fallback de edição', async () => {
   const calls = [];
   const provider = new AIHordeImageProvider({
     pollIntervalMs: 1,
     fetchImpl: async (url, options = {}) => {
       calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
-      if (String(url).includes('/status/models')) return new Response(JSON.stringify([{ name: 'stable_diffusion', count: 2, eta: 1 }]), { status: 200 });
+      if (String(url).includes('/status/models')) return new Response(JSON.stringify([{ name: 'AlbedoBase XL', count: 2, eta: 1 }]), { status: 200 });
       if (String(url).endsWith('/generate/async')) return new Response(JSON.stringify({ id: 'request-1234' }), { status: 200 });
       if (String(url).includes('/generate/check/')) return new Response(JSON.stringify({ done: true, is_possible: true }), { status: 200 });
-      return new Response(JSON.stringify({ generations: [{ state: 'ok', censored: false, model: 'stable_diffusion', img: PNG_DATA_URL }] }), { status: 200 });
+      return new Response(JSON.stringify({ generations: [{ state: 'ok', censored: false, model: 'AlbedoBase XL', img: PNG_DATA_URL }] }), { status: 200 });
     }
   });
-  const marker = `Crie uma imagem editada.\n[[GENESIS_IMAGE_REQUEST_V1]]${JSON.stringify({ operation: 'edit', prompt: 'Mude o fundo para azul', references: [PNG_DATA_URL] })}[[/GENESIS_IMAGE_REQUEST_V1]]`;
+  const marker = `Crie uma imagem editada.\n[[GENESIS_IMAGE_REQUEST_V1]]${JSON.stringify({ operation: 'edit', prompt: 'Mude o fundo para azul e deixe realista', references: [PNG_DATA_URL] })}[[/GENESIS_IMAGE_REQUEST_V1]]`;
   const result = await provider.generateImage({ prompt: marker });
   const queued = calls.find(call => call.url.endsWith('/generate/async')).body;
   assert.equal(queued.source_processing, 'img2img');
   assert.ok(queued.source_image.length > 20);
-  assert.equal(queued.params.denoising_strength, 0.62);
+  assert.equal(queued.params.denoising_strength, 0.58);
+  assert.equal(queued.params.sampler_name, 'k_dpmpp_2m');
+  assert.equal(queued.params.karras, true);
+  assert.ok(queued.params.width >= 512);
+  assert.ok(queued.params.height >= 512);
+  assert.match(queued.prompt, /###/);
+  assert.match(queued.prompt, /cartoon/i);
   assert.equal(result.imageOperation, 'edit');
 });

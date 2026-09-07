@@ -1,5 +1,11 @@
 import { ProviderError } from '../core/errors.js';
 import { parseImageGenerationRequest } from '../core/image-request.js';
+import {
+  fallbackImagePlan,
+  hordePrompt,
+  imageDimensionsForPlan,
+  scoreCommunityImageModel
+} from '../core/image-intelligence.js';
 
 const ANONYMOUS_KEY = '0000000000';
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -161,14 +167,14 @@ export class AIHordeImageProvider {
     } catch { /* cancelamento remoto é melhor esforço */ }
   }
 
-  async availableModels(signal) {
+  async availableModels(signal, plan = {}) {
     try {
       const models = await this.requestJson('/status/models?type=image', {}, signal);
       return (Array.isArray(models) ? models : [])
         .filter(model => Number(model?.count || 0) > 0 && model?.name)
-        .filter(model => !/nsfw|hentai|nude|pony|furry/i.test(String(model.name)))
-        .sort((a, b) => Number(b.count || 0) - Number(a.count || 0) || Number(a.eta || 999999) - Number(b.eta || 999999))
-        .slice(0, 4)
+        .filter(model => !/nsfw|hentai|nude|furry/i.test(String(model.name)))
+        .sort((a, b) => scoreCommunityImageModel(b, plan) - scoreCommunityImageModel(a, plan))
+        .slice(0, 3)
         .map(model => String(model.name));
     } catch (error) {
       if (signal?.aborted || error?.code === 'request_cancelled') throw error;
@@ -176,16 +182,19 @@ export class AIHordeImageProvider {
     }
   }
 
-  async generateImage({ prompt, signal, onAttempt = () => {} }) {
+  async generateImage({ prompt, plan = null, signal, onAttempt = () => {} }) {
     const request = parseImageGenerationRequest(prompt);
-    const normalizedPrompt = String(request.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const activePlan = plan && typeof plan === 'object'
+      ? { ...fallbackImagePlan(request), ...plan, references: plan.references || request.references }
+      : fallbackImagePlan(request);
+    const normalizedPrompt = hordePrompt(activePlan).replace(/\s+/g, ' ').trim().slice(0, 4000);
     if (!normalizedPrompt) {
       throw new ProviderError('Descreva a imagem que o Gênesis deve criar.', {
         providerId: this.id, category: 'request', code: 'empty_image_prompt', retryable: false
       });
     }
-    const reference = request.references.length ? sourceImage(request.references[0]) : '';
-    if (request.operation === 'edit' && !reference) {
+    const reference = activePlan.references?.length ? sourceImage(activePlan.references[0]) : '';
+    if (activePlan.operation === 'edit' && !reference) {
       throw new ProviderError('A imagem de referência não pôde ser preparada para edição.', {
         providerId: this.id, category: 'request', code: 'community_image_invalid_reference', retryable: false
       });
@@ -193,14 +202,25 @@ export class AIHordeImageProvider {
 
     const started = Date.now();
     let requestId = null;
-    const models = await this.availableModels(signal);
-    onAttempt({ id: 'community-auto', name: request.operation === 'edit' ? 'Modelos comunitários img2img' : 'Modelos comunitários disponíveis' }, 1);
+    const models = await this.availableModels(signal, activePlan);
+    onAttempt({
+      id: models[0] || 'community-auto',
+      name: activePlan.operation === 'edit'
+        ? `Modelos comunitários img2img · ${models[0] || 'automático'}`
+        : `Modelo comunitário · ${models[0] || 'automático'}`
+    }, 1);
     try {
+      const dimensions = imageDimensionsForPlan(activePlan);
       const params = {
-        n: 1, width: 512, height: 512, steps: request.operation === 'edit' ? 24 : 20,
-        cfg_scale: 7, sampler_name: 'k_euler_a'
+        n: 1,
+        width: dimensions.width,
+        height: dimensions.height,
+        steps: activePlan.operation === 'edit' ? 28 : activePlan.style === 'photorealistic' ? 30 : 26,
+        cfg_scale: activePlan.style === 'photorealistic' ? 6.5 : 7,
+        sampler_name: 'k_dpmpp_2m',
+        karras: true
       };
-      if (request.operation === 'edit') params.denoising_strength = 0.62;
+      if (activePlan.operation === 'edit') params.denoising_strength = 0.58;
       const body = {
         prompt: normalizedPrompt,
         params,
@@ -254,23 +274,25 @@ export class AIHordeImageProvider {
           });
         }
         const image = imagePayload(generation.img);
-        const model = String(generation.model || 'modelo comunitário');
+        const model = String(generation.model || models[0] || 'modelo comunitário');
         return {
-          content: request.operation === 'edit'
+          content: activePlan.operation === 'edit'
             ? 'Imagem editada pelo Gênesis usando a referência enviada e uma rota comunitária gratuita.'
             : 'Imagem criada pelo Gênesis com uma rota remota gratuita.',
           generatedImages: [{
-            name: `genesis-${request.operation === 'edit' ? 'edit' : 'image'}-${Date.now()}.${image.extension}`,
+            name: `genesis-${activePlan.operation === 'edit' ? 'edit' : 'image'}-${Date.now()}.${image.extension}`,
             mimeType: image.mimeType,
             dataUrl: `data:${image.mimeType};base64,${image.buffer.toString('base64')}`
           }],
-          imageOperation: request.operation,
+          imageOperation: activePlan.operation,
+          imagePlan: activePlan,
           model,
           resolvedModel: model,
           resolvedProvider: this.name,
           latencyMs: Date.now() - started,
           finishReason: 'stop',
           attempts: [],
+          generationMetadata: Array.isArray(generation.gen_metadata) ? generation.gen_metadata : [],
           usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
         };
       }

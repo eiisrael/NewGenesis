@@ -1,5 +1,6 @@
 import { PreciseOpenRouterProvider } from './precise-openrouter-provider.js';
 import { AIHordeImageProvider } from './ai-horde-image-provider.js';
+import { SmartImageProvider } from './smart-image-provider.js';
 
 export function createProviders(config, settings) {
   const common = { requestTimeoutMs: config.requestTimeoutMs, discoveryTimeoutMs: config.discoveryTimeoutMs };
@@ -20,13 +21,15 @@ export function createProviders(config, settings) {
 }
 
 export function createImageProviders(config, textProviders) {
-  const openRouter = textProviders.find(provider => provider.id === 'openrouter');
-  return [
-    ...(openRouter?.generateImage ? [openRouter] : []),
-    new AIHordeImageProvider({
-      ...config.images.aiHorde,
-      requestTimeoutMs: config.discoveryTimeoutMs,
-      clientAgent: `NewGenesis:${config.version}:https://github.com/eiisrael/NewGenesis`
-    })
-  ];
+  const openRouter = textProviders.find(provider => provider.id === 'openrouter') || null;
+  const community = new AIHordeImageProvider({
+    ...config.images.aiHorde,
+    requestTimeoutMs: config.discoveryTimeoutMs,
+    clientAgent: `NewGenesis:${config.version}:https://github.com/eiisrael/NewGenesis`
+  });
+  return [new SmartImageProvider({
+    openRouter,
+    community,
+    requestTimeoutMs: config.images.aiHorde.generationTimeoutMs
+  })];
 }

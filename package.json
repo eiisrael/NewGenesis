@@ -1,7 +1,7 @@
 {
   "name": "genesis-new",
-  "version": "2.4.0",
-  "description": "Agente local genérico com SupremeMind, contexto contínuo, execução agentic verificável, voz nativa e roteamento inteligente entre modelos gratuitos.",
+  "version": "2.5.0",
+  "description": "Agente local genérico com SupremeMind, contexto contínuo, execução agentic verificável, voz nativa e inteligência visual com roteamento entre modelos gratuitos.",
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",
