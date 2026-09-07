@@ -16,6 +16,26 @@ test('primeira exploração força busca e permanece sequencial', () => {
   assert.equal(body.parallel_tool_calls, false);
 });
 
+test('criação direta expõe somente escrita e força a ferramenta', () => {
+  const tools = [tool('search_project'), tool('read_project_file'), tool('replace_project_text'), tool('write_project_file')];
+  const messages = [{ role: 'user', content: 'Crie um index.html na pasta do projeto' }];
+  const effective = agenticToolsForMessages(tools, messages);
+  assert.deepEqual(effective.map(item => item.function.name), ['write_project_file']);
+  assert.deepEqual(prepareAgenticToolRequest({ messages, tools: effective }).tool_choice, {
+    type: 'function', function: { name: 'write_project_file' }
+  });
+});
+
+test('requisição agentic não elimina rotas gratuitas por require_parameters rígido', () => {
+  const body = prepareAgenticToolRequest({
+    provider: { allow_fallbacks: true, require_parameters: true },
+    messages: [{ role: 'user', content: 'Crie um index.html.' }],
+    tools: [tool('write_project_file')]
+  });
+  assert.equal(body.provider.require_parameters, false);
+  assert.deepEqual(body.tool_choice, { type: 'function', function: { name: 'write_project_file' } });
+});
+
 test('depois da primeira evidência uma tarefa de edição continua exigindo ação', () => {
   const body = prepareAgenticToolRequest({
     messages: [{ role: 'tool', tool_call_id: 'x', content: '{"ok":true}' }],
