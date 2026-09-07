@@ -2,7 +2,16 @@ const CODE_NOTICE = 'Há um bloco de código na resposta.';
 const TABLE_NOTICE = 'Há uma tabela na resposta.';
 
 export function normalizeVoiceTranscript(value) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  let text = String(value || '').replace(/\s+/g, ' ').trim();
+  text = text.replace(/\bvoca(?:\s+a)?(?=\s+gostaria\b)/giu, 'você');
+  const [first = '', ...rest] = text.split(/\s+/);
+  const firstAscii = first.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]/gi, '').toLowerCase();
+  // Whisper occasionally joins "Olá, Gênesis" into a single phonetic token
+  // (for example "Volacionesis"). Correct only this narrow greeting shape so
+  // arbitrary dictated content remains untouched.
+  if (/^v?ola[a-z]{0,4}nesis$/.test(firstAscii)) text = ['Olá, Gênesis', ...rest].join(' ').trim();
+  text = text.replace(/^olá[, ]+g[eê]nesis\b/iu, 'Olá, Gênesis');
+  text = text.replace(/^Olá, Gênesis[, ]+(?:do|tudo) bem[.!?]*$/iu, 'Olá, Gênesis, tudo bem?');
   const continuation = text.match(/^continui([.!?…]*)$/iu);
   if (!continuation) return text;
   return `Continue${continuation[1] || '.'}`;

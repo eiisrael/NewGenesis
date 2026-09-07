@@ -118,6 +118,28 @@ async function readBuffer(request, { contentType, maxBytes }) {
   return Buffer.concat(chunks);
 }
 
+function voiceRequestOperation(request, response) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (controller.signal.aborted) return;
+    const error = Object.assign(new Error('Operação de voz interrompida pelo cliente.'), { status: 499, code: 'request_cancelled', category: 'cancelled' });
+    controller.abort(error);
+  };
+  const onResponseClose = () => {
+    if (!response.writableEnded) abort();
+  };
+  request.once('aborted', abort);
+  response.once('close', onResponseClose);
+  if (request.aborted) abort();
+  return {
+    signal: controller.signal,
+    cleanup() {
+      request.off('aborted', abort);
+      response.off('close', onResponseClose);
+    }
+  };
+}
+
 function assertTrustedMutation(request) {
   // Cabeçalho anti-CSRF emitido somente pela UI. Não é autenticação e nunca
   // autoriza exposição remota do servidor.
@@ -335,7 +357,7 @@ function publicConversation(conversation) {
   };
 }
 
-function terminalExecutionReport(error, contract, usage = null) {
+export function terminalExecutionReport(error, contract, usage = null) {
   const failure = safeError(error);
   const evidence = Array.isArray(error?.evidence) ? error.evidence : [];
   const successful = evidence.filter(item => item?.ok === true);
@@ -344,6 +366,11 @@ function terminalExecutionReport(error, contract, usage = null) {
     'move_project_path', 'delete_project_path'
   ].includes(item.tool));
   const checks = successful.filter(item => item.tool === 'run_project_check');
+  const failedOperations = evidence.filter(item => item?.ok !== true && item?.skipped !== true && item?.duplicate !== true);
+  const failedMutations = failedOperations.filter(item => [
+    'write_project_file', 'replace_project_text', 'create_project_directory',
+    'move_project_path', 'delete_project_path'
+  ].includes(item.tool));
   const failedCriteria = (error?.verification?.checks || [])
     .filter(item => item.required && !item.passed)
     .map(item => item.label);
@@ -363,6 +390,15 @@ function terminalExecutionReport(error, contract, usage = null) {
     }
   } else {
     lines.push('', '### O que foi feito', '', '- Nenhuma operação no projeto foi confirmada nesta tentativa.');
+  }
+  if (failedOperations.length) {
+    lines.push('', '### O que foi tentado, mas não foi aplicado', '');
+    for (const item of failedOperations.slice(-8)) {
+      lines.push(`- ${item.tool}: ${item.summary || 'a operação não foi concluída.'}`);
+    }
+    if (failedMutations.length) {
+      lines.push('- **Aprovar autorizou a tentativa, mas não confirma uma gravação. As operações acima não alteraram o arquivo.**');
+    }
   }
   lines.push('', '### O que impediu a conclusão', '', `- ${failure.message}`);
   for (const criterion of failedCriteria) lines.push(`- Critério pendente: ${criterion}.`);
@@ -599,8 +635,12 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
       if (url.pathname === '/api/voice/status' && request.method === 'GET') {
         return sendJson(response, 200, voiceRuntime ? await voiceRuntime.refreshStatus() : {
           available: false, localOnly: true, storesRawAudio: false,
-          stt: { whisper: { available: false, profiles: {} } },
-          tts: { kokoro: { available: false }, chatterbox: { available: false }, piper: { available: false } }
+          stt: { whisper: { available: false, warm: false, warming: false, health: 'unavailable', profiles: {} } },
+          tts: {
+            kokoro: { available: false, warm: false, warming: false, health: 'unavailable' },
+            chatterbox: { available: false, warm: false, warming: false, health: 'unavailable' },
+            piper: { available: false, warm: false, warming: false, health: 'unavailable' }
+          }
         });
       }
 
@@ -613,27 +653,43 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
       if (url.pathname === '/api/voice/transcribe' && request.method === 'POST') {
         assertTrustedMutation(request);
         if (!voiceRuntime) return sendJson(response, 503, { error: { code: 'voice_runtime_unavailable', message: 'Runtime de voz local indisponível.' } });
-        const audio = await readBuffer(request, { contentType: 'audio/wav', maxBytes: 10 * 1024 * 1024 });
-        const result = await voiceRuntime.transcribe(audio, { quality: url.searchParams.get('quality') || 'balanced' });
-        return sendJson(response, 200, result);
+        const operation = voiceRequestOperation(request, response);
+        try {
+          const audio = await readBuffer(request, { contentType: 'audio/wav', maxBytes: 10 * 1024 * 1024 });
+          const result = await voiceRuntime.transcribe(audio, {
+            quality: url.searchParams.get('quality') || 'rapid',
+            segmented: url.searchParams.get('segmented') === '1',
+            signal: operation.signal
+          });
+          if (!operation.signal.aborted) return sendJson(response, 200, result);
+          return;
+        } finally {
+          operation.cleanup();
+        }
       }
 
       if (url.pathname === '/api/voice/synthesize' && request.method === 'POST') {
         assertTrustedMutation(request);
         if (!voiceRuntime) return sendJson(response, 503, { error: { code: 'voice_runtime_unavailable', message: 'Runtime de voz local indisponível.' } });
-        const body = await readJson(request, 12 * 1024);
-        const result = await voiceRuntime.synthesize(body);
-        setSecurityHeaders(response);
-        response.writeHead(200, {
-          'content-type': 'audio/wav',
-          'content-length': result.audio.length,
-          'cache-control': 'no-store',
-          'x-genesis-voice-engine': result.engine,
-          'x-genesis-voice-process-mode': result.processMode,
-          'x-genesis-voice-latency-ms': String(result.latencyMs)
-        });
-        response.end(result.audio);
-        return;
+        const operation = voiceRequestOperation(request, response);
+        try {
+          const body = await readJson(request, 12 * 1024);
+          const result = await voiceRuntime.synthesize(body, { signal: operation.signal });
+          if (operation.signal.aborted) return;
+          setSecurityHeaders(response);
+          response.writeHead(200, {
+            'content-type': 'audio/wav',
+            'content-length': result.audio.length,
+            'cache-control': 'no-store',
+            'x-genesis-voice-engine': result.engine,
+            'x-genesis-voice-process-mode': result.processMode,
+            'x-genesis-voice-latency-ms': String(result.latencyMs)
+          });
+          response.end(result.audio);
+          return;
+        } finally {
+          operation.cleanup();
+        }
       }
 
       if (url.pathname === '/api/context/capabilities' && request.method === 'GET') {
@@ -1605,6 +1661,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
       if (request.method === 'GET' && await serveStatic(response, staticRoot, url.pathname)) return;
       sendJson(response, 404, { error: { code: 'not_found', message: 'Página não encontrada.' } });
     } catch (error) {
+      if (request.aborted || response.destroyed || response.writableEnded) return;
       telemetry.emit({
         category: 'server', type: 'server.request.error', title: 'Falha ao processar solicitação',
         detail: error.status ? error.message : 'Erro interno tratado pelo Genesis.', level: 'error',

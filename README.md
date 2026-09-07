@@ -222,13 +222,13 @@ http://127.0.0.1:7331/neural/neural.html
 
 A voz é uma camada modular sobre o mesmo composer, histórico e orquestrador. **Conversa por voz** detecta início/fim da fala, envia automaticamente, fala sentenças estáveis durante o streaming, volta a ouvir e aceita barge-in para cancelar TTS. Push-to-talk e chat textual continuam disponíveis.
 
-O core inicia sem Python/modelos. `SpeechRecognition` permanece apenas como fallback de entrada; toda saída falada usa um engine local. O perfil recomendado combina whisper.cpp+Silero com Kokoro-82M pt-BR; Piper é a alternativa mais leve e Chatterbox pt-BR continua opcional/experimental.
+O core inicia sem Python/modelos. `SpeechRecognition` permanece apenas como fallback de entrada. A saída automática usa uma voz pt-BR marcada como local pelo sistema enquanto Piper/Whisper aquecem em segundo plano; depois prefere o worker local saudável. Kokoro continua opcional e Chatterbox pt-BR experimental.
 
 Para instalar o perfil local validado no Windows:
 
 ```powershell
 npm run voice:diagnose
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile balanced -AcceptDownload
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile rapid -AcceptDownload
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component kokoro -AcceptDownload -AcceptLargeDownload
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component piper -AcceptDownload
 ```
@@ -488,7 +488,7 @@ SupremeMind check   4/4 testes aprovados + syntax + npm pack --dry-run
 
 Sem testes ignorados para esconder regressões.
 
-Neste branch 2.4, a validação atual aprovou **203/203** testes na suíte principal, manteve o SupremeMind em **4/4** com empacotamento seco e aprovou a verificação visual do composer, dos perfis Whisper e do teste Kokoro.
+Neste branch 2.4, a validação atual aprovou **237/237** testes na suíte principal, manteve o SupremeMind em **4/4** com empacotamento seco e aprovou o smoke test real do navegador para conversa, barge-in, degradação e reprodução local.
 
 ---
 

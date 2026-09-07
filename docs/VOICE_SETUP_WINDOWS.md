@@ -11,8 +11,8 @@ npm run voice:diagnose
 ## Perfil local recomendado
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile balanced
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile balanced -AcceptDownload
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile rapid
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component whisper -Profile rapid -AcceptDownload
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component kokoro
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component kokoro -AcceptDownload -AcceptLargeDownload
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1 -Component piper -AcceptDownload
@@ -22,8 +22,8 @@ Perfis Whisper disponíveis:
 
 | Perfil | Modelo multilíngue | Peso | Uso sugerido |
 | --- | --- | ---: | --- |
-| `rapid` | `base-q5_1` | 59.721.011 bytes | CPU/RAM limitados |
-| `balanced` | `small-q5_1` | 190.085.487 bytes | padrão conservador |
+| `rapid` | `base-q5_1` | 59.707.625 bytes | padrão em CPUs de até 8 threads |
+| `balanced` | `small-q5_1` | 190.085.487 bytes | maior precisão, somente quando a latência medida for aceitável |
 | `accurate` | `medium-q5_0` | 539.212.467 bytes | somente após benchmark |
 
 O setup também baixa o binário CPU oficial do whisper.cpp 1.8.6 (4.093.849 bytes) e Silero VAD 6.2 (885.098 bytes). O upstream não publica binário Vulkan oficial para Windows nesta versão; ativar Vulkan exigiria build manual auditado, portanto não é feito silenciosamente.

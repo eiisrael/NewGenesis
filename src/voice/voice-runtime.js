@@ -7,8 +7,12 @@ const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_AUDIO_DURATION_SECONDS = 45;
 const MAX_TTS_TEXT = 2000;
 const MAX_TTS_AUDIO_BYTES = 24 * 1024 * 1024;
-const STT_TIMEOUT_MS = 90_000;
-const TTS_TIMEOUT_MS = 120_000;
+const STT_TIMEOUT_MS = Object.freeze({ rapid: 18_000, balanced: 30_000, accurate: 50_000 });
+const WHISPER_STARTUP_TIMEOUT_MS = 20_000;
+const WHISPER_FAILURE_COOLDOWN_MS = 15_000;
+const TTS_TIMEOUT_MS = Object.freeze({ kokoro: 28_000, chatterbox: 60_000, piper: 60_000 });
+const TTS_STARTUP_TIMEOUT_MS = Object.freeze({ kokoro: 28_000, chatterbox: 60_000, piper: 60_000 });
+const KOKORO_FAILURE_COOLDOWN_MS = 30_000;
 const WHISPER_INITIAL_PROMPT = 'Genesis. Gênesis. Caruaru. Pernambuco. SupremeMind. Assistente Genesis em português do Brasil.';
 
 const profileNames = Object.freeze({ rapid: 'rapid', balanced: 'balanced', accurate: 'accurate' });
@@ -19,19 +23,35 @@ const ttsPresets = Object.freeze({
 });
 
 export class VoiceRuntime {
-  constructor({ root, dataDir, telemetry = null, spawnImpl = spawn, fetchImpl = globalThis.fetch } = {}) {
+  constructor({ root, dataDir, telemetry = null, spawnImpl = spawn, fetchImpl = globalThis.fetch, backgroundWarmup = true, timeouts = {} } = {}) {
     this.root = path.resolve(root || process.cwd());
     this.voiceDir = path.resolve(dataDir || path.join(this.root, '.genesis'), 'voice');
     this.tempDir = path.join(this.voiceDir, 'tmp');
     this.telemetry = telemetry;
     this.spawnImpl = spawnImpl;
     this.fetchImpl = fetchImpl;
+    this.timeouts = {
+      stt: Object.fromEntries(Object.entries(STT_TIMEOUT_MS).map(([profile, value]) => [profile, positiveTimeout(timeouts.stt?.[profile] ?? timeouts.stt, value)])),
+      whisperStartup: positiveTimeout(timeouts.whisperStartup, WHISPER_STARTUP_TIMEOUT_MS),
+      whisperCooldown: positiveTimeout(timeouts.whisperCooldown, WHISPER_FAILURE_COOLDOWN_MS),
+      tts: Object.fromEntries(Object.entries(TTS_TIMEOUT_MS).map(([engine, value]) => [engine, positiveTimeout(timeouts.tts?.[engine], value)])),
+      ttsStartup: Object.fromEntries(Object.entries(TTS_STARTUP_TIMEOUT_MS).map(([engine, value]) => [engine, positiveTimeout(timeouts.ttsStartup?.[engine], value)])),
+      kokoroCooldown: positiveTimeout(timeouts.kokoroCooldown, KOKORO_FAILURE_COOLDOWN_MS)
+    };
     this.manifest = defaultManifest();
     this.snapshot = emptyStatus();
     this.active = { stt: false, tts: false };
     this.children = new Set();
     this.ttsWorkers = new Map();
+    this.ttsQueue = [];
+    this.ttsDraining = false;
+    this.ttsActiveJob = null;
+    this.ttsCooldownUntil = new Map();
     this.whisperServer = null;
+    this.whisperCooldownUntil = 0;
+    this.engineHealth = new Map(['whisper', 'kokoro', 'chatterbox', 'piper'].map(name => [name, { warming: false, lastError: null }]));
+    this.backgroundTasks = new Set();
+    this.backgroundWarmup = backgroundWarmup !== false;
     this.stopping = false;
   }
 
@@ -46,6 +66,7 @@ export class VoiceRuntime {
       if (error.code !== 'ENOENT') this.#emit('voice.runtime.manifest_invalid', 'Manifesto de voz inválido; usando caminhos padrão.', 'warning');
     }
     await this.refreshStatus();
+    if (this.backgroundWarmup) this.#startBackgroundWarmup();
     return this;
   }
 
@@ -79,8 +100,20 @@ export class VoiceRuntime {
     const chatterboxPythonAvailable = await isFile(chatterboxPython);
     const kokoroPythonAvailable = await isFile(kokoroPython);
     const persistentSttAvailable = whisperAvailable && await isFile(whisperServerBinary);
+    const workerAvailable = await isFile(worker);
+    const kokoroAvailable = kokoroPythonAvailable && workerAvailable && await isFile(kokoroModel) && await isFile(kokoroConfig) && await hasKokoroVoices(kokoroVoices);
+    const chatterboxAvailable = chatterboxPythonAvailable && workerAvailable && await isDirectory(chatterboxSource) && await isFile(chatterboxMarker);
+    const piperAvailable = piperPythonAvailable && workerAvailable && await isFile(piperModel) && await isFile(piperConfig);
+    const whisperWarm = Boolean(this.whisperServer?.ready);
+    const kokoroWarm = this.ttsWorkers.get('kokoro')?.ready === true;
+    const chatterboxWarm = this.ttsWorkers.get('chatterbox')?.ready === true;
+    const piperWarm = this.ttsWorkers.get('piper')?.ready === true;
+    const whisperRuntime = this.#runtimeStatus('whisper', whisperAvailable, whisperWarm, this.whisperCooldownUntil);
+    const kokoroRuntime = this.#runtimeStatus('kokoro', kokoroAvailable, kokoroWarm, this.ttsCooldownUntil.get('kokoro') || 0);
+    const chatterboxRuntime = this.#runtimeStatus('chatterbox', chatterboxAvailable, chatterboxWarm, this.ttsCooldownUntil.get('chatterbox') || 0);
+    const piperRuntime = this.#runtimeStatus('piper', piperAvailable, piperWarm, this.ttsCooldownUntil.get('piper') || 0);
     this.snapshot = {
-      available: whisperAvailable || piperPythonAvailable || chatterboxPythonAvailable || kokoroPythonAvailable,
+      available: whisperAvailable || piperAvailable || chatterboxAvailable || kokoroAvailable,
       localOnly: true,
       storesRawAudio: false,
       limits: { maxAudioBytes: MAX_AUDIO_BYTES, maxAudioSeconds: MAX_AUDIO_DURATION_SECONDS, maxTextCharacters: MAX_TTS_TEXT, concurrencyPerEngine: 1 },
@@ -90,77 +123,110 @@ export class VoiceRuntime {
           version: this.manifest.whisper.version,
           vad: await isFile(vadModel),
           processMode: persistentSttAvailable ? 'persistent-server' : 'cli-per-request',
-          warm: Boolean(this.whisperServer?.ready),
+          ...whisperRuntime,
           profiles
         }
       },
       tts: {
-        kokoro: { available: kokoroPythonAvailable && await isFile(worker) && await isFile(kokoroModel) && await isFile(kokoroConfig) && await hasKokoroVoices(kokoroVoices), version: this.manifest.kokoro.version, model: this.manifest.kokoro.modelId, voices: [...this.manifest.kokoro.voiceNames], warm: this.ttsWorkers.get('kokoro')?.ready === true, processMode: 'persistent-worker' },
-        chatterbox: { available: chatterboxPythonAvailable && await isFile(worker) && await isDirectory(chatterboxSource) && await isFile(chatterboxMarker), version: this.manifest.chatterbox.version, model: this.manifest.chatterbox.model, warm: this.ttsWorkers.get('chatterbox')?.ready === true, processMode: 'persistent-worker' },
-        piper: { available: piperPythonAvailable && await isFile(worker) && await isFile(piperModel) && await isFile(piperConfig), version: this.manifest.piper.version, model: this.manifest.piper.voice, warm: this.ttsWorkers.get('piper')?.ready === true, processMode: 'persistent-worker' }
+        kokoro: { available: kokoroAvailable, version: this.manifest.kokoro.version, model: this.manifest.kokoro.modelId, voices: [...this.manifest.kokoro.voiceNames], ...kokoroRuntime, processMode: 'persistent-worker' },
+        chatterbox: { available: chatterboxAvailable, version: this.manifest.chatterbox.version, model: this.manifest.chatterbox.model, ...chatterboxRuntime, processMode: 'persistent-worker' },
+        piper: { available: piperAvailable, version: this.manifest.piper.version, model: this.manifest.piper.voice, ...piperRuntime, processMode: 'persistent-worker' }
       }
     };
+    this.snapshot.queue = { ttsWaiting: this.ttsQueue.length, ttsActive: this.active.tts, sttActive: this.active.stt };
     return this.status();
   }
 
-  async transcribe(audio, { quality = 'balanced' } = {}) {
+  async transcribe(audio, { quality = 'rapid', segmented = false, signal = null } = {}) {
     if (this.stopping) throw runtimeError(503, 'voice_shutting_down', 'A camada de voz está encerrando.');
+    throwIfVoiceAborted(signal);
     if (this.active.stt) throw runtimeError(429, 'voice_stt_busy', 'O Whisper local já está transcrevendo outra fala.');
     const buffer = Buffer.isBuffer(audio) ? audio : Buffer.from(audio || []);
     const wav = inspectWave(buffer);
-    const profile = profileNames[quality] || 'balanced';
+    const profile = profileNames[quality] || 'rapid';
     const selected = this.#selectWhisperProfile(profile);
     if (!selected) throw runtimeError(503, 'whisper_not_installed', 'O perfil solicitado do Whisper local não está instalado. Execute scripts/setup-voice.ps1.');
+    const deadline = Date.now() + this.timeouts.stt[selected.name];
+    const operation = createOperationSignal(signal, deadline, () => runtimeError(504, 'voice_stt_timeout', 'A transcrição local excedeu o tempo limite.'));
     this.active.stt = true;
+    this.#syncQueueStatus();
     const startedAt = performance.now();
     try {
+      throwIfVoiceAborted(operation.signal);
       let payload;
-      let processMode = 'persistent-server';
-      if (await isFile(this.#resolve(this.manifest.whisper.serverBinary))) {
+      let processMode;
+      const persistentAvailable = await isFile(this.#resolve(this.manifest.whisper.serverBinary));
+      if (persistentAvailable && Date.now() >= this.whisperCooldownUntil) {
+        processMode = 'persistent-server';
         try {
-          payload = await this.#transcribeWithServer(buffer, selected);
+          payload = await this.#transcribeWithServer(buffer, selected, { signal: operation.signal, deadline });
         } catch (error) {
-          this.#emit('voice.stt.server_fallback', `Servidor persistente indisponível; usando CLI para este turno. ${sanitizeEngineError(error.message)}`, 'warning');
-          this.#stopWhisperServer();
-          payload = await this.#transcribeWithCli(buffer, selected);
-          processMode = 'cli-fallback';
+          this.#stopWhisperServer(error);
+          if (!isVoiceAbort(error)) this.#markWhisperFailure(error);
+          throw error;
         }
       } else {
-        payload = await this.#transcribeWithCli(buffer, selected);
-        processMode = 'cli-per-request';
+        processMode = persistentAvailable ? 'cli-cooldown' : 'cli-per-request';
+        payload = await this.#transcribeWithCli(buffer, selected, { signal: operation.signal, deadline });
       }
       const text = whisperText(payload).replace(/\s+/g, ' ').trim().slice(0, 12000);
-      return { text, language: payload?.result?.language || payload?.language || 'pt', profile: selected.name, processMode, durationSeconds: wav.durationSeconds, latencyMs: Math.round(performance.now() - startedAt) };
+      const detail = whisperDetail(payload, segmented === true);
+      return {
+        text,
+        language: payload?.result?.language || payload?.language || payload?.detected_language || 'pt',
+        profile: selected.name,
+        processMode,
+        durationSeconds: wav.durationSeconds,
+        latencyMs: Math.round(performance.now() - startedAt),
+        ...detail
+      };
     } finally {
       this.active.stt = false;
+      this.#syncQueueStatus();
+      operation.cleanup();
     }
   }
 
-  async synthesize({ text, engine = 'kokoro', preset = 'natural', rate = 1, voice = 'pf_dora' } = {}) {
+  async synthesize({ text, engine = 'kokoro', preset = 'natural', rate = 1, voice = 'pf_dora' } = {}, { signal = null } = {}) {
     if (this.stopping) throw runtimeError(503, 'voice_shutting_down', 'A camada de voz está encerrando.');
-    if (this.active.tts) throw runtimeError(429, 'voice_tts_busy', 'O sintetizador local já está gerando outra fala.');
+    throwIfVoiceAborted(signal);
     const safeText = validateTtsText(text);
     if (!['kokoro', 'chatterbox', 'piper'].includes(engine)) throw runtimeError(400, 'invalid_tts_engine', 'Engine TTS inválido.');
-    const current = await this.refreshStatus();
-    if (!current.tts[engine]?.available) throw runtimeError(503, `${engine}_not_installed`, `${engine} não está instalado. Execute scripts/setup-voice.ps1.`);
     const selectedPreset = Object.hasOwn(ttsPresets, preset) ? preset : 'natural';
-    this.active.tts = true;
-    const requestDir = await fs.mkdtemp(path.join(this.tempDir, 'tts-'));
-    const outputPath = path.join(requestDir, 'output.wav');
     const startedAt = performance.now();
-    try {
-      const selectedVoice = this.manifest.kokoro.voiceNames.includes(voice) ? voice : 'pf_dora';
-      const worker = await this.#ttsWorker(engine);
-      await worker.request({ text: safeText, output: outputPath, preset: selectedPreset, rate: clamp(rate, 0.7, 1.6, 1), voice: selectedVoice }, TTS_TIMEOUT_MS);
-      const audio = await fs.readFile(outputPath);
-      if (audio.length < 44 || audio.length > MAX_TTS_AUDIO_BYTES || audio.toString('ascii', 0, 4) !== 'RIFF') {
-        throw runtimeError(502, 'invalid_tts_audio', 'O sintetizador local retornou um WAV inválido.');
+    const deadline = Date.now() + this.timeouts.tts[engine];
+    return this.#enqueueTts(async (jobSignal, absoluteDeadline) => {
+      throwIfVoiceAborted(jobSignal);
+      throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine));
+      const current = await this.refreshStatus();
+      if (!current.tts[engine]?.available) throw runtimeError(503, `${engine}_not_installed`, `${engine} não está instalado. Execute scripts/setup-voice.ps1.`);
+      const cooldownUntil = this.ttsCooldownUntil.get(engine) || 0;
+      if (cooldownUntil > Date.now()) {
+        throw runtimeError(503, `${engine}_worker_cooldown`, `${engine} está em recuperação após uma falha de inicialização. Tente novamente em instantes.`);
       }
-      return { audio, engine, preset: selectedPreset, processMode: 'persistent-worker', latencyMs: Math.round(performance.now() - startedAt) };
-    } finally {
-      this.active.tts = false;
-      await fs.rm(requestDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
-    }
+      const requestDir = await fs.mkdtemp(path.join(this.tempDir, 'tts-'));
+      const outputPath = path.join(requestDir, 'output.wav');
+      try {
+        throwIfVoiceAborted(jobSignal);
+        throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine));
+        const selectedVoice = this.manifest.kokoro.voiceNames.includes(voice) ? voice : 'pf_dora';
+        const worker = await this.#ttsWorker(engine, { signal: jobSignal, deadline: absoluteDeadline });
+        await worker.request({ text: safeText, output: outputPath, preset: selectedPreset, rate: clamp(rate, 0.7, 1.6, 1), voice: selectedVoice }, { signal: jobSignal, deadline: absoluteDeadline });
+        throwIfVoiceAborted(jobSignal);
+        throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine, worker.stderr));
+        const audio = await fs.readFile(outputPath);
+        if (audio.length < 44 || audio.length > MAX_TTS_AUDIO_BYTES || audio.toString('ascii', 0, 4) !== 'RIFF') {
+          throw runtimeError(502, 'invalid_tts_audio', 'O sintetizador local retornou um WAV inválido.');
+        }
+        return { audio, engine, preset: selectedPreset, processMode: 'persistent-worker', latencyMs: Math.round(performance.now() - startedAt) };
+      } catch (error) {
+        if (isVoiceAbort(error) || isVoiceTimeout(error)) this.#discardTtsWorker(engine, error);
+        if (isVoiceTimeout(error)) this.#markTtsFailure(engine, error);
+        throw error;
+      } finally {
+        await fs.rm(requestDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
+      }
+    }, { signal, deadline, engine });
   }
 
   recordMetric({ name, at, detail } = {}) {
@@ -176,9 +242,17 @@ export class VoiceRuntime {
   }
 
   beginShutdown() {
+    if (this.stopping) return;
     this.stopping = true;
-    this.#stopWhisperServer();
-    for (const worker of this.ttsWorkers.values()) worker.close();
+    const error = runtimeError(503, 'voice_shutting_down', 'A camada de voz está encerrando.');
+    this.ttsActiveJob?.controller.abort(error);
+    for (const job of this.ttsQueue.splice(0)) {
+      job.controller.abort(error);
+      job.reject(error);
+      job.cleanup();
+    }
+    this.#stopWhisperServer(error);
+    for (const worker of this.ttsWorkers.values()) worker.close(error);
     this.ttsWorkers.clear();
     for (const child of this.children) child.kill('SIGTERM');
   }
@@ -189,42 +263,179 @@ export class VoiceRuntime {
     await fs.rm(this.tempDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
   }
 
+  #runtimeStatus(name, available, warm, cooldownUntil = 0) {
+    const state = this.engineHealth.get(name) || { warming: false, lastError: null };
+    const cooling = cooldownUntil > Date.now();
+    const warming = available && !warm && !cooling && state.warming === true;
+    const health = !available
+      ? 'unavailable'
+      : warm
+        ? 'healthy'
+        : cooling
+          ? 'cooldown'
+          : warming
+            ? 'warming'
+            : state.lastError
+              ? 'unhealthy'
+              : 'cold';
+    return {
+      warm: available && warm === true && !cooling,
+      warming,
+      health,
+      ...(cooling ? { cooldownUntil: new Date(cooldownUntil).toISOString() } : {}),
+      ...(state.lastError && !warm ? { lastError: state.lastError } : {})
+    };
+  }
+
+  #setEngineHealth(name, patch) {
+    const current = this.engineHealth.get(name) || { warming: false, lastError: null };
+    this.engineHealth.set(name, { ...current, ...patch });
+    const target = name === 'whisper' ? this.snapshot.stt?.whisper : this.snapshot.tts?.[name];
+    if (!target) return;
+    const warm = name === 'whisper' ? this.whisperServer?.ready === true : this.ttsWorkers.get(name)?.ready === true;
+    const cooldownUntil = name === 'whisper' ? this.whisperCooldownUntil : this.ttsCooldownUntil.get(name) || 0;
+    Object.assign(target, this.#runtimeStatus(name, target.available === true, warm, cooldownUntil));
+  }
+
+  #startBackgroundWarmup() {
+    const start = promise => {
+      const observed = Promise.resolve(promise).catch(error => {
+        if (!this.stopping && !isVoiceAbort(error)) this.#emit('voice.runtime.warmup_failed', sanitizeEngineError(error.message), 'warning');
+      });
+      this.backgroundTasks.add(observed);
+      observed.finally(() => this.backgroundTasks.delete(observed));
+    };
+    if (this.snapshot.tts?.piper?.available) {
+      const deadline = Date.now() + this.timeouts.ttsStartup.piper;
+      this.#setEngineHealth('piper', { warming: true, lastError: null });
+      start(this.#ttsWorker('piper', { deadline }));
+    }
+    if (this.snapshot.stt?.whisper?.processMode === 'persistent-server') {
+      const selected = this.#selectWarmWhisperProfile();
+      if (selected) {
+        const deadline = Date.now() + this.timeouts.whisperStartup;
+        this.#setEngineHealth('whisper', { warming: true, lastError: null });
+        start(this.#ensureWhisperServer(selected, { deadline }));
+      }
+    }
+  }
+
+  #selectWarmWhisperProfile() {
+    for (const name of ['rapid', 'balanced', 'accurate']) {
+      const selected = this.#selectWhisperProfile(name);
+      if (selected) return selected;
+    }
+    return null;
+  }
+
+  #enqueueTts(run, { signal, deadline, engine }) {
+    if (this.stopping) return Promise.reject(runtimeError(503, 'voice_shutting_down', 'A camada de voz está encerrando.'));
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      let queued = true;
+      let settled = false;
+      const onExternalAbort = () => controller.abort(voiceAbortError(signal?.reason));
+      if (signal?.aborted) onExternalAbort();
+      else signal?.addEventListener?.('abort', onExternalAbort, { once: true });
+      const queueTimer = setTimeout(() => controller.abort(ttsTimeoutError(engine)), Math.max(1, deadline - Date.now()));
+      const cleanup = () => {
+        clearTimeout(queueTimer);
+        signal?.removeEventListener?.('abort', onExternalAbort);
+        controller.signal.removeEventListener('abort', onQueuedAbort);
+      };
+      const settle = (error, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error); else resolve(value);
+      };
+      const onQueuedAbort = () => {
+        if (!queued) return;
+        const index = this.ttsQueue.indexOf(job);
+        if (index >= 0) this.ttsQueue.splice(index, 1);
+        settle(voiceAbortError(controller.signal.reason));
+      };
+      const job = { controller, deadline, engine, run, reject: error => settle(error), resolve: value => settle(null, value), cleanup, markStarted: () => { queued = false; clearTimeout(queueTimer); } };
+      controller.signal.addEventListener('abort', onQueuedAbort, { once: true });
+      if (controller.signal.aborted) return onQueuedAbort();
+      this.ttsQueue.push(job);
+      this.#syncQueueStatus();
+      void this.#drainTtsQueue();
+    });
+  }
+
+  async #drainTtsQueue() {
+    if (this.ttsDraining) return;
+    this.ttsDraining = true;
+    try {
+      while (this.ttsQueue.length) {
+        const job = this.ttsQueue.shift();
+        if (job.controller.signal.aborted) {
+          job.reject(voiceAbortError(job.controller.signal.reason));
+          continue;
+        }
+        job.markStarted();
+        this.ttsActiveJob = job;
+        this.active.tts = true;
+        this.#syncQueueStatus();
+        try {
+          const result = await job.run(job.controller.signal, job.deadline);
+          job.resolve(result);
+        } catch (error) {
+          job.reject(error);
+        } finally {
+          this.ttsActiveJob = null;
+          this.active.tts = false;
+          this.#syncQueueStatus();
+        }
+      }
+    } finally {
+      this.ttsDraining = false;
+      if (this.ttsQueue.length) void this.#drainTtsQueue();
+    }
+  }
+
+  #syncQueueStatus() {
+    if (this.snapshot.queue) Object.assign(this.snapshot.queue, { ttsWaiting: this.ttsQueue.length, ttsActive: this.active.tts, sttActive: this.active.stt });
+  }
+
   #selectWhisperProfile(requested) {
-    const name = profileNames[requested] || 'balanced';
+    const name = profileNames[requested] || 'rapid';
     if (!this.snapshot.stt.whisper.profiles[name]?.available) return null;
     return { name, model: this.#resolve(this.manifest.whisper.profiles[name].model) };
   }
 
-  async #transcribeWithCli(buffer, selected) {
+  async #transcribeWithCli(buffer, selected, { signal, deadline }) {
     const requestDir = await fs.mkdtemp(path.join(this.tempDir, 'stt-'));
     const inputPath = path.join(requestDir, 'input.wav');
     const outputPrefix = path.join(requestDir, 'transcript');
     try {
+      throwIfVoiceAborted(signal);
+      throwIfDeadlineExpired(deadline, () => runtimeError(504, 'voice_stt_timeout', 'A transcrição local excedeu o tempo limite.'));
       await fs.writeFile(inputPath, buffer, { flag: 'wx', mode: 0o600 });
       const args = ['-m', selected.model, '-f', inputPath, '-l', 'pt', '-oj', '-of', outputPrefix, '-np', '-nt'];
       args.push('--prompt', WHISPER_INITIAL_PROMPT);
       const vad = this.#resolve(this.manifest.whisper.vadModel);
       if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
-      await this.#run(this.#resolve(this.manifest.whisper.binary), args, { timeoutMs: STT_TIMEOUT_MS, kind: 'stt' });
+      await this.#run(this.#resolve(this.manifest.whisper.binary), args, { deadline, signal, kind: 'stt' });
+      throwIfVoiceAborted(signal);
       return JSON.parse(await fs.readFile(`${outputPrefix}.json`, 'utf8'));
     } finally {
       await fs.rm(requestDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 });
     }
   }
 
-  async #transcribeWithServer(buffer, selected) {
-    const server = await this.#ensureWhisperServer(selected);
+  async #transcribeWithServer(buffer, selected, { signal, deadline }) {
+    const server = await this.#ensureWhisperServer(selected, { signal, deadline });
     const form = new FormData();
     form.append('file', new Blob([buffer], { type: 'audio/wav' }), 'speech.wav');
-    form.append('response_format', 'json');
+    form.append('response_format', 'verbose_json');
     form.append('language', 'pt');
     form.append('temperature', '0.0');
     form.append('prompt', WHISPER_INITIAL_PROMPT);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), STT_TIMEOUT_MS);
     try {
       const response = await this.fetchImpl(`http://127.0.0.1:${server.port}/inference`, {
-        method: 'POST', body: form, signal: controller.signal, redirect: 'error'
+        method: 'POST', body: form, signal, redirect: 'error'
       });
       const raw = await response.text();
       if (!response.ok) throw runtimeError(502, 'whisper_server_failed', `whisper-server respondeu ${response.status}: ${sanitizeEngineError(raw)}`);
@@ -232,25 +443,45 @@ export class VoiceRuntime {
       try { return JSON.parse(raw); }
       catch { throw runtimeError(502, 'whisper_server_invalid_json', 'whisper-server retornou JSON inválido.'); }
     } catch (error) {
-      if (error?.name === 'AbortError') throw runtimeError(504, 'whisper_server_timeout', 'whisper-server excedeu o tempo limite.');
+      if (signal?.aborted) {
+        const reason = voiceAbortError(signal.reason);
+        if (reason.code === 'voice_stt_timeout') {
+          throw runtimeError(504, 'voice_stt_timeout', `A transcrição local excedeu o tempo limite. ${sanitizeEngineError(server.stderr)}`.trim());
+        }
+        throw reason;
+      }
+      if (error?.name === 'AbortError') throw runtimeError(504, 'voice_stt_timeout', `A transcrição local excedeu o tempo limite. ${sanitizeEngineError(server.stderr)}`.trim());
       throw error;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
-  async #ensureWhisperServer(selected) {
-    if (this.whisperServer?.ready && this.whisperServer.profile === selected.name && this.whisperServer.model === selected.model) return this.whisperServer;
-    this.#stopWhisperServer();
+  async #ensureWhisperServer(selected, { signal = null, deadline = Date.now() + this.timeouts.whisperStartup } = {}) {
+    throwIfVoiceAborted(signal);
+    throwIfDeadlineExpired(deadline, () => runtimeError(504, 'whisper_server_start_timeout', 'whisper-server não ficou pronto dentro do limite.'));
+    const existing = this.whisperServer;
+    if (existing && existing.profile === selected.name && existing.model === selected.model) {
+      if (existing.ready) return existing;
+      if (existing.startPromise) {
+        return waitForPromise(existing.startPromise, {
+          signal,
+          deadline,
+          timeoutError: () => runtimeError(504, 'whisper_server_start_timeout', `whisper-server não ficou pronto dentro do limite. ${sanitizeEngineError(existing.stderr)}`.trim()),
+          onCancel: error => this.#stopWhisperServer(error, existing)
+        });
+      }
+    }
+    this.#stopWhisperServer(runtimeError(503, 'whisper_server_restarting', 'whisper-server reiniciado para trocar o perfil.'));
     const port = await availableLoopbackPort();
+    throwIfVoiceAborted(signal);
     const binary = this.#resolve(this.manifest.whisper.serverBinary);
     const args = ['-m', selected.model, '--host', '127.0.0.1', '--port', String(port), '-l', 'pt', '-nt', '-ng'];
     const vad = this.#resolve(this.manifest.whisper.vadModel);
     if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
     const child = this.spawnImpl(binary, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(binary), env: process.env });
     this.children.add(child);
-    const server = { child, port, profile: selected.name, model: selected.model, ready: false, stderr: '' };
+    const server = { child, port, profile: selected.name, model: selected.model, ready: false, stderr: '', stopped: false, stopReason: null, startPromise: null };
     this.whisperServer = server;
+    this.#setEngineHealth('whisper', { warming: true, lastError: null });
     const collect = chunk => { server.stderr = `${server.stderr}${chunk.toString('utf8')}`.slice(-4_000); };
     child.stdout.on('data', collect);
     child.stderr.on('data', collect);
@@ -259,31 +490,83 @@ export class VoiceRuntime {
       server.ready = false;
       if (this.whisperServer === server) this.whisperServer = null;
     });
-    child.once('error', collect);
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      if (child.exitCode != null) throw runtimeError(503, 'whisper_server_start_failed', `whisper-server encerrou durante a inicialização. ${sanitizeEngineError(server.stderr)}`);
-      try {
-        await this.fetchImpl(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(800) });
-        server.ready = true;
-        return server;
-      } catch { await delay(100); }
-    }
-    this.#stopWhisperServer();
-    throw runtimeError(504, 'whisper_server_start_timeout', 'whisper-server não ficou pronto dentro do limite.');
+    child.once('error', error => {
+      collect(error);
+      server.stopReason ||= runtimeError(503, 'whisper_server_start_failed', `Não foi possível iniciar whisper-server. ${sanitizeEngineError(error.message)}`.trim());
+    });
+    const startupDeadline = Math.min(deadline, Date.now() + this.timeouts.whisperStartup);
+    server.startPromise = this.#waitForWhisperServer(server, startupDeadline).then(ready => {
+      this.whisperCooldownUntil = 0;
+      this.#setEngineHealth('whisper', { warming: false, lastError: null });
+      return ready;
+    }).catch(error => {
+      if (!isVoiceAbort(error) && error.code !== 'whisper_server_restarting') this.#markWhisperFailure(error);
+      else this.#setEngineHealth('whisper', { warming: false });
+      throw error;
+    });
+    return waitForPromise(server.startPromise, {
+      signal,
+      deadline,
+      timeoutError: () => runtimeError(504, 'whisper_server_start_timeout', `whisper-server não ficou pronto dentro do limite. ${sanitizeEngineError(server.stderr)}`.trim()),
+      onCancel: error => this.#stopWhisperServer(error, server)
+    });
   }
 
-  #stopWhisperServer() {
-    const server = this.whisperServer;
-    this.whisperServer = null;
+  async #waitForWhisperServer(server, deadline) {
+    while (Date.now() < deadline) {
+      if (server.stopped) throw server.stopReason || runtimeError(503, 'whisper_server_stopped', 'whisper-server foi encerrado.');
+      if (server.child.exitCode != null) throw runtimeError(503, 'whisper_server_start_failed', `whisper-server encerrou durante a inicialização. ${sanitizeEngineError(server.stderr)}`.trim());
+      try {
+        const probeTimeout = Math.max(1, Math.min(800, deadline - Date.now()));
+        await this.fetchImpl(`http://127.0.0.1:${server.port}/`, { signal: AbortSignal.timeout(probeTimeout) });
+        if (server.stopped) throw server.stopReason;
+        server.ready = true;
+        return server;
+      } catch (error) {
+        if (server.stopped) throw server.stopReason || error;
+        await delay(Math.min(100, Math.max(1, deadline - Date.now())));
+      }
+    }
+    const error = runtimeError(504, 'whisper_server_start_timeout', `whisper-server não ficou pronto dentro do limite. ${sanitizeEngineError(server.stderr)}`.trim());
+    this.#stopWhisperServer(error, server);
+    throw error;
+  }
+
+  #markWhisperFailure(error) {
+    this.whisperCooldownUntil = Date.now() + this.timeouts.whisperCooldown;
+    this.#setEngineHealth('whisper', { warming: false, lastError: sanitizeEngineError(error?.message || error) || 'Falha no whisper-server.' });
+  }
+
+  #stopWhisperServer(reason = null, expected = null) {
+    const server = expected || this.whisperServer;
+    if (expected && this.whisperServer !== expected) return;
+    if (this.whisperServer === server) this.whisperServer = null;
     if (!server?.child) return;
     server.ready = false;
+    server.stopped = true;
+    server.stopReason = reason || runtimeError(503, 'whisper_server_stopped', 'whisper-server foi encerrado.');
     try { server.child.kill('SIGTERM'); } catch { /* já encerrado */ }
   }
 
-  async #ttsWorker(engine) {
+  async #ttsWorker(engine, { signal = null, deadline = Date.now() + this.timeouts.ttsStartup[engine] } = {}) {
+    throwIfVoiceAborted(signal);
+    throwIfDeadlineExpired(deadline, () => ttsTimeoutError(engine));
+    const cooldownUntil = this.ttsCooldownUntil.get(engine) || 0;
+    if (cooldownUntil > Date.now()) {
+      throw runtimeError(503, `${engine}_worker_cooldown`, `${engine} está em recuperação após uma falha de inicialização. Tente novamente em instantes.`);
+    }
     const current = this.ttsWorkers.get(engine);
-    if (current?.ready) return current;
+    if (current) {
+      try {
+        await current.start({ signal, deadline });
+        this.#setEngineHealth(engine, { warming: false, lastError: null });
+        return current;
+      } catch (error) {
+        this.#discardTtsWorker(engine, error, current);
+        if (!isVoiceAbort(error)) this.#markTtsFailure(engine, error);
+        throw error;
+      }
+    }
     const script = path.join(this.root, 'scripts', 'voice', 'tts-server.py');
     let command;
     let args;
@@ -300,32 +583,86 @@ export class VoiceRuntime {
       command = this.#resolve(this.manifest.piper.python);
       args = [script, '--engine', 'piper', '--model', this.#resolve(this.manifest.piper.model), '--config', this.#resolve(this.manifest.piper.config)];
     }
-    const worker = new PersistentJsonWorker({
+    let worker;
+    worker = new PersistentJsonWorker({
       command,
       args,
       env,
+      engine,
+      startupTimeoutMs: this.timeouts.ttsStartup[engine],
       spawnImpl: this.spawnImpl,
       onSpawn: child => this.children.add(child),
-      onExit: child => this.children.delete(child)
+      onExit: (child, error) => {
+        this.children.delete(child);
+        if (this.ttsWorkers.get(engine) !== worker) return;
+        this.ttsWorkers.delete(engine);
+        if (!this.stopping && !isVoiceAbort(error)) this.#markTtsFailure(engine, error);
+        else this.#setEngineHealth(engine, { warming: false });
+      }
     });
     this.ttsWorkers.set(engine, worker);
+    this.#setEngineHealth(engine, { warming: true, lastError: null });
     try {
-      await worker.start(TTS_TIMEOUT_MS);
+      await worker.start({ signal, deadline });
+      this.ttsCooldownUntil.delete(engine);
+      this.#setEngineHealth(engine, { warming: false, lastError: null });
       return worker;
     } catch (error) {
-      this.ttsWorkers.delete(engine);
-      worker.close();
+      this.#discardTtsWorker(engine, error, worker);
+      if (!isVoiceAbort(error)) this.#markTtsFailure(engine, error);
+      if (error?.code) throw error;
       throw runtimeError(503, `${engine}_worker_start_failed`, `Não foi possível iniciar ${engine}: ${sanitizeEngineError(error.message)}`);
     }
   }
 
-  #run(command, args, { timeoutMs, kind, env = {} }) {
+  #discardTtsWorker(engine, reason, expected = null) {
+    const worker = expected || this.ttsWorkers.get(engine);
+    if (!worker || (expected && this.ttsWorkers.get(engine) !== expected)) return;
+    this.ttsWorkers.delete(engine);
+    worker.close(reason);
+    this.#setEngineHealth(engine, { warming: false });
+  }
+
+  #markTtsFailure(engine, error) {
+    if (engine === 'kokoro') this.ttsCooldownUntil.set(engine, Date.now() + this.timeouts.kokoroCooldown);
+    this.#setEngineHealth(engine, { warming: false, lastError: sanitizeEngineError(error?.message || error) || `Falha no ${engine}.` });
+  }
+
+  #run(command, args, { deadline, signal, kind, env = {} }) {
     return new Promise((resolve, reject) => {
-      const child = this.spawnImpl(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
+      try {
+        throwIfVoiceAborted(signal);
+        throwIfDeadlineExpired(deadline, () => runtimeError(504, `${kind}_timeout`, 'O engine local excedeu o limite de tempo.'));
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      let child;
+      try {
+        child = this.spawnImpl(command, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
+      } catch (error) {
+        reject(runtimeError(503, `${kind}_spawn_failed`, `Não foi possível iniciar o engine local: ${sanitizeEngineError(error.message)}`));
+        return;
+      }
       this.children.add(child);
       let settled = false;
+      let timedOut = false;
       let outputBytes = 0;
       let stderr = '';
+      let timer = null;
+      const finish = (error, keepChild = false) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener?.('abort', onAbort);
+        if (!keepChild) this.children.delete(child);
+        if (error) reject(error); else resolve();
+      };
+      const onAbort = () => {
+        const error = voiceAbortError(signal?.reason);
+        try { child.kill('SIGTERM'); } catch { /* já encerrado */ }
+        finish(error, true);
+      };
       const collect = chunk => {
         outputBytes += chunk.length;
         if (outputBytes <= 2 * 1024 * 1024) stderr += chunk.toString('utf8');
@@ -333,19 +670,19 @@ export class VoiceRuntime {
       };
       child.stdout.on('data', chunk => { outputBytes += chunk.length; if (outputBytes > 2 * 1024 * 1024) child.kill('SIGTERM'); });
       child.stderr.on('data', collect);
-      const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) return onAbort();
+      timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGTERM'); } catch { /* já encerrado */ }
+        finish(runtimeError(504, `${kind}_timeout`, `O engine local excedeu o limite de tempo. ${sanitizeEngineError(stderr)}`.trim()), true);
+      }, Math.max(1, deadline - Date.now()));
       child.once('error', error => finish(runtimeError(503, `${kind}_spawn_failed`, `Não foi possível iniciar o engine local: ${error.message}`)));
       child.once('exit', (code, signal) => {
         if (code === 0) finish();
-        else finish(runtimeError(signal ? 504 : 502, signal ? `${kind}_timeout` : `${kind}_failed`, signal ? 'O engine local excedeu o limite de tempo.' : `O engine local encerrou com código ${code}. ${sanitizeEngineError(stderr)}`));
-      });
-      const finish = error => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
+        else if (!settled) finish(runtimeError(timedOut ? 504 : 502, timedOut ? `${kind}_timeout` : `${kind}_failed`, timedOut ? `O engine local excedeu o limite de tempo. ${sanitizeEngineError(stderr)}`.trim() : `O engine local encerrou com código ${code}. ${sanitizeEngineError(stderr)}`));
         this.children.delete(child);
-        if (error) reject(error); else resolve();
-      };
+      });
     });
   }
 
@@ -398,9 +735,9 @@ function defaultManifest() {
       serverBinary: process.platform === 'win32' ? 'bin/whisper-server.exe' : 'bin/whisper-server',
       vadModel: 'models/whisper/ggml-silero-v6.2.0.bin',
       profiles: {
-        rapid: { model: 'models/whisper/ggml-base-q5_1.bin', downloadBytes: 59700000 },
-        balanced: { model: 'models/whisper/ggml-small-q5_1.bin', downloadBytes: 190000000 },
-        accurate: { model: 'models/whisper/ggml-medium-q5_0.bin', downloadBytes: 539000000 }
+        rapid: { model: 'models/whisper/ggml-base-q5_1.bin', downloadBytes: 59707625 },
+        balanced: { model: 'models/whisper/ggml-small-q5_1.bin', downloadBytes: 190085487 },
+        accurate: { model: 'models/whisper/ggml-medium-q5_0.bin', downloadBytes: 539212467 }
       }
     },
     chatterbox: { version: 'v3-pt-br', python: process.platform === 'win32' ? 'venv-chatterbox/Scripts/python.exe' : 'venv-chatterbox/bin/python', model: 'ResembleAI/Chatterbox-Multilingual-pt-br', source: 'chatterbox-space/chatterbox/src', readyMarker: 'chatterbox.ready', hfHome: 'hf-cache' },
@@ -419,13 +756,88 @@ function normalizeManifest(value) {
 }
 
 function emptyStatus() {
-  return { available: false, localOnly: true, storesRawAudio: false, stt: { whisper: { available: false, profiles: {} } }, tts: { kokoro: { available: false }, chatterbox: { available: false }, piper: { available: false } } };
+  const unavailable = { available: false, warm: false, warming: false, health: 'unavailable' };
+  return {
+    available: false,
+    localOnly: true,
+    storesRawAudio: false,
+    stt: { whisper: { ...unavailable, profiles: {} } },
+    tts: { kokoro: { ...unavailable }, chatterbox: { ...unavailable }, piper: { ...unavailable } },
+    queue: { ttsWaiting: 0, ttsActive: false, sttActive: false }
+  };
 }
 
 function whisperText(payload) {
   if (typeof payload?.text === 'string') return payload.text;
   if (Array.isArray(payload?.transcription)) return payload.transcription.map(segment => segment?.text || '').join(' ');
   return '';
+}
+
+function whisperDetail(payload, includeSegments) {
+  const source = Array.isArray(payload?.segments)
+    ? payload.segments
+    : Array.isArray(payload?.transcription)
+      ? payload.transcription
+      : [];
+  const segments = source.slice(0, 256).map(segment => {
+    const words = Array.isArray(segment?.words) ? segment.words : [];
+    const wordProbabilities = words.map(word => finiteProbability(word?.probability ?? word?.p)).filter(value => value !== null);
+    const tokenProbabilities = Array.isArray(segment?.tokens)
+      ? segment.tokens.map(token => finiteProbability(token?.probability ?? token?.p)).filter(value => value !== null)
+      : [];
+    const directConfidence = finiteProbability(segment?.confidence);
+    const logProbability = finiteNumber(segment?.avg_logprob ?? segment?.avgLogprob);
+    const confidence = wordProbabilities.length
+      ? average(wordProbabilities)
+      : tokenProbabilities.length
+        ? average(tokenProbabilities)
+        : directConfidence ?? (logProbability === null ? null : clamp(Math.exp(logProbability), 0, 1, 0));
+    const noSpeechProbability = finiteProbability(segment?.no_speech_prob ?? segment?.noSpeechProbability);
+    const start = segmentTime(segment?.start, segment?.offsets?.from);
+    const end = segmentTime(segment?.end, segment?.offsets?.to);
+    return {
+      text: String(segment?.text || '').replace(/\s+/g, ' ').trim().slice(0, 2_000),
+      ...(start !== null ? { start } : {}),
+      ...(end !== null ? { end } : {}),
+      ...(confidence !== null ? { confidence } : {}),
+      ...(noSpeechProbability !== null ? { noSpeechProbability } : {})
+    };
+  });
+  const wordProbabilities = source.flatMap(segment => Array.isArray(segment?.words)
+    ? segment.words.map(word => finiteProbability(word?.probability ?? word?.p)).filter(value => value !== null)
+    : []);
+  const segmentConfidences = segments.map(segment => finiteProbability(segment.confidence)).filter(value => value !== null);
+  const directConfidence = finiteProbability(payload?.confidence);
+  const confidence = wordProbabilities.length ? average(wordProbabilities) : directConfidence ?? (segmentConfidences.length ? average(segmentConfidences) : null);
+  const noSpeechValues = [finiteProbability(payload?.no_speech_prob ?? payload?.noSpeechProbability), ...segments.map(segment => finiteProbability(segment.noSpeechProbability))].filter(value => value !== null);
+  const noSpeechProbability = noSpeechValues.length ? Math.max(...noSpeechValues) : null;
+  return {
+    ...(confidence !== null ? { confidence } : {}),
+    ...(noSpeechProbability !== null ? { noSpeechProbability } : {}),
+    ...(includeSegments ? { segments } : {})
+  };
+}
+
+function finiteNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function finiteProbability(value) {
+  const number = finiteNumber(value);
+  return number === null ? null : Math.max(0, Math.min(1, number));
+}
+
+function average(values) {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function segmentTime(seconds, milliseconds) {
+  const direct = finiteNumber(seconds);
+  if (direct !== null && direct >= 0) return direct;
+  const offset = finiteNumber(milliseconds);
+  return offset !== null && offset >= 0 ? offset / 1_000 : null;
 }
 
 function validateTtsText(value) {
@@ -436,7 +848,14 @@ function validateTtsText(value) {
 }
 
 function sanitizeEngineError(value) {
-  return String(value || '').replace(/[\r\n]+/g, ' ').replace(/(?:hf_|api_)?token\s*[=:]\s*\S+/gi, 'token=[oculto]').slice(-500);
+  return String(value || '')
+    .replace(/(?:authorization\s*[:=]\s*bearer|bearer)\s+[^\s"']+/gi, 'authorization=[oculto]')
+    .replace(/\b(?:sk|hf)_[A-Za-z0-9._-]{8,}\b/g, '[segredo oculto]')
+    .replace(/(?:api[_ -]?key|(?:hf_|api_)?token|password|senha)\s*[=:]\s*[^\s"']+/gi, 'credencial=[oculta]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(-500);
 }
 
 function voiceMetricTitle(name) {
@@ -460,8 +879,96 @@ function clamp(value, min, max, fallback) {
   return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
 }
 
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function positiveTimeout(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
+}
+
+function delay(ms, signal = null) {
+  if (!signal) return new Promise(resolve => setTimeout(resolve, ms));
+  throwIfVoiceAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, ms);
+    const onAbort = () => finish(voiceAbortError(signal.reason));
+    signal.addEventListener('abort', onAbort, { once: true });
+    function finish(error = null) {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      if (error) reject(error); else resolve();
+    }
+  });
+}
+
+function createOperationSignal(externalSignal, deadline, timeoutError) {
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort(voiceAbortError(externalSignal?.reason));
+  if (externalSignal?.aborted) onExternalAbort();
+  else externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(timeoutError()), Math.max(1, deadline - Date.now()));
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener?.('abort', onExternalAbort);
+    }
+  };
+}
+
+function waitForPromise(promise, { signal = null, deadline, timeoutError, onCancel = () => {} }) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      if (error) reject(error); else resolve(value);
+    };
+    const cancel = error => {
+      try { onCancel(error); } catch { /* o erro original permanece canônico */ }
+      finish(error);
+    };
+    const onAbort = () => cancel(voiceAbortError(signal.reason));
+    const timer = setTimeout(() => cancel(timeoutError()), Math.max(1, deadline - Date.now()));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(value => finish(null, value), error => finish(error));
+  });
+}
+
+function throwIfVoiceAborted(signal) {
+  if (signal?.aborted) throw voiceAbortError(signal.reason);
+}
+
+function throwIfDeadlineExpired(deadline, errorFactory) {
+  if (!Number.isFinite(deadline) || deadline > Date.now()) return;
+  throw errorFactory();
+}
+
+function voiceAbortError(reason) {
+  // DOMException AbortError exposes a numeric legacy `code` (20). Preserve
+  // only our structured runtime errors; normalize browser/Node abort reasons
+  // to the stable contract consumed by the HTTP and UI layers.
+  if (reason instanceof Error && typeof reason.code === 'string' && reason.code) return reason;
+  const error = runtimeError(499, 'request_cancelled', 'Operação de voz interrompida.');
+  error.category = 'cancelled';
+  return error;
+}
+
+function isVoiceAbort(error) {
+  return error?.code === 'request_cancelled' || error?.name === 'AbortError';
+}
+
+function isVoiceTimeout(error) {
+  return typeof error?.code === 'string' && error.code.includes('timeout');
+}
+
+function ttsTimeoutError(engine, stderr = '') {
+  const detail = sanitizeEngineError(stderr);
+  return runtimeError(504, 'voice_tts_timeout', `A síntese ${engine} excedeu o tempo limite.${detail ? ` ${detail}` : ''}`);
 }
 
 function availableLoopbackPort() {
@@ -478,9 +985,11 @@ function availableLoopbackPort() {
 }
 
 class PersistentJsonWorker {
-  constructor({ command, args, env = {}, spawnImpl = spawn, onSpawn = () => {}, onExit = () => {} }) {
+  constructor({ command, args, engine, startupTimeoutMs, env = {}, spawnImpl = spawn, onSpawn = () => {}, onExit = () => {} }) {
     this.command = command;
     this.args = args;
+    this.engine = engine;
+    this.startupTimeoutMs = startupTimeoutMs;
     this.env = env;
     this.spawnImpl = spawnImpl;
     this.onSpawn = onSpawn;
@@ -488,95 +997,156 @@ class PersistentJsonWorker {
     this.child = null;
     this.ready = false;
     this.startPromise = null;
+    this.finishStart = null;
     this.pending = new Map();
     this.counter = 0;
     this.stdout = '';
     this.stderr = '';
+    this.closeReason = null;
   }
 
-  start(timeoutMs) {
+  start({ signal = null, deadline = Date.now() + this.startupTimeoutMs } = {}) {
+    throwIfVoiceAborted(signal);
+    throwIfDeadlineExpired(deadline, () => ttsTimeoutError(this.engine, this.stderr));
     if (this.ready) return Promise.resolve(this);
-    if (this.startPromise) return this.startPromise;
-    this.startPromise = new Promise((resolve, reject) => {
-      const child = this.spawnImpl(this.command, this.args, {
+    const startPromise = this.startPromise || this.#spawn(Math.min(deadline, Date.now() + this.startupTimeoutMs));
+    return waitForPromise(startPromise, {
+      signal,
+      deadline,
+      timeoutError: () => ttsTimeoutError(this.engine, this.stderr),
+      onCancel: error => this.close(error)
+    });
+  }
+
+  #spawn(deadline) {
+    this.stdout = '';
+    this.stderr = '';
+    this.closeReason = null;
+    let resolveStart;
+    let rejectStart;
+    let startSettled = false;
+    let timer = null;
+    const startPromise = new Promise((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    this.startPromise = startPromise;
+    const finishStart = (error = null) => {
+      if (startSettled) return;
+      startSettled = true;
+      if (timer) clearTimeout(timer);
+      this.finishStart = null;
+      if (error) rejectStart(error);
+      else {
+        this.ready = true;
+        resolveStart(this);
+      }
+    };
+    this.finishStart = finishStart;
+    let child;
+    try {
+      child = this.spawnImpl(this.command, this.args, {
         shell: false,
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...this.env }
       });
-      this.child = child;
-      this.onSpawn(child);
-      const timer = setTimeout(() => {
-        reject(new Error('O worker TTS excedeu o tempo de inicialização.'));
-        this.close();
-      }, timeoutMs);
-      const finishStart = (error = null) => {
-        clearTimeout(timer);
-        if (error) reject(error);
-        else { this.ready = true; resolve(this); }
-      };
-      child.stdout.on('data', chunk => {
-        this.stdout += chunk.toString('utf8');
-        if (this.stdout.length > 2 * 1024 * 1024) return this.close();
-        let lineEnd;
-        while ((lineEnd = this.stdout.indexOf('\n')) >= 0) {
-          const line = this.stdout.slice(0, lineEnd).trim();
-          this.stdout = this.stdout.slice(lineEnd + 1);
-          if (!line) continue;
-          let message;
-          try { message = JSON.parse(line); } catch { continue; }
-          if (message.type === 'ready') {
-            finishStart();
-            continue;
-          }
-          const entry = this.pending.get(String(message.id || ''));
-          if (!entry) continue;
-          this.pending.delete(String(message.id));
-          clearTimeout(entry.timer);
-          if (message.ok === true) entry.resolve(message);
-          else entry.reject(new Error(sanitizeEngineError(message.error || 'O worker TTS falhou.')));
+    } catch (error) {
+      const spawnError = runtimeError(503, `${this.engine}_worker_start_failed`, `Não foi possível iniciar ${this.engine}: ${sanitizeEngineError(error.message)}`);
+      queueMicrotask(() => finishStart(spawnError));
+      return startPromise;
+    }
+    this.child = child;
+    this.onSpawn(child);
+    timer = setTimeout(() => {
+      const error = ttsTimeoutError(this.engine, this.stderr);
+      finishStart(error);
+      this.close(error);
+    }, Math.max(1, deadline - Date.now()));
+    child.stdout.on('data', chunk => {
+      this.stdout += chunk.toString('utf8');
+      if (this.stdout.length > 2 * 1024 * 1024) {
+        return this.close(runtimeError(502, `${this.engine}_worker_protocol_failed`, 'O worker TTS excedeu o limite do protocolo local.'));
+      }
+      let lineEnd;
+      while ((lineEnd = this.stdout.indexOf('\n')) >= 0) {
+        const line = this.stdout.slice(0, lineEnd).trim();
+        this.stdout = this.stdout.slice(lineEnd + 1);
+        if (!line) continue;
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.type === 'ready') {
+          finishStart();
+          continue;
         }
-      });
-      child.stderr.on('data', chunk => { this.stderr = `${this.stderr}${chunk.toString('utf8')}`.slice(-8_000); });
-      child.once('error', error => finishStart(error));
-      child.once('exit', (code, signal) => {
-        this.onExit(child);
-        this.ready = false;
-        this.child = null;
-        this.startPromise = null;
-        const error = new Error(`Worker TTS encerrado (${signal || code}). ${sanitizeEngineError(this.stderr)}`);
-        finishStart(error);
-        for (const entry of this.pending.values()) {
-          clearTimeout(entry.timer);
-          entry.reject(error);
-        }
-        this.pending.clear();
-      });
+        const entry = this.pending.get(String(message.id || ''));
+        if (!entry) continue;
+        if (message.ok === true) entry.finish(null, message);
+        else entry.finish(runtimeError(502, `${this.engine}_synthesis_failed`, sanitizeEngineError(message.error || 'O worker TTS falhou.')));
+      }
     });
-    return this.startPromise;
+    child.stderr.on('data', chunk => { this.stderr = `${this.stderr}${chunk.toString('utf8')}`.slice(-8_000); });
+    child.once('error', error => {
+      const failure = runtimeError(503, `${this.engine}_worker_start_failed`, `Não foi possível iniciar ${this.engine}: ${sanitizeEngineError(error.message)}`);
+      finishStart(failure);
+      this.close(failure);
+    });
+    child.once('exit', (code, signal) => {
+      const error = this.closeReason || runtimeError(502, `${this.engine}_worker_exited`, `Worker TTS encerrado (${signal || code}). ${sanitizeEngineError(this.stderr)}`.trim());
+      finishStart(error);
+      this.ready = false;
+      if (this.child === child) this.child = null;
+      this.startPromise = null;
+      for (const entry of [...this.pending.values()]) entry.finish(error);
+      this.onExit(child, error);
+    });
+    return startPromise;
   }
 
-  async request(payload, timeoutMs) {
-    await this.start(timeoutMs);
-    if (!this.child?.stdin?.writable) throw new Error('Worker TTS não está disponível.');
+  async request(payload, { signal = null, deadline } = {}) {
+    await this.start({ signal, deadline });
+    throwIfVoiceAborted(signal);
+    throwIfDeadlineExpired(deadline, () => ttsTimeoutError(this.engine, this.stderr));
+    const child = this.child;
+    if (!child?.stdin?.writable) throw runtimeError(503, `${this.engine}_worker_unavailable`, 'Worker TTS não está disponível.');
     const id = `${process.pid}-${Date.now()}-${++this.counter}`;
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        const error = voiceAbortError(signal.reason);
+        finish(error);
+        this.close(error);
+      };
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error('O worker TTS excedeu o tempo limite.'));
-        this.close();
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.child.stdin.write(`${JSON.stringify({ id, ...payload })}\n`, error => {
-        if (!error) return;
+        const error = ttsTimeoutError(this.engine, this.stderr);
+        finish(error);
+        this.close(error);
+      }, Math.max(1, deadline - Date.now()));
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener?.('abort', onAbort);
         this.pending.delete(id);
-        reject(error);
+        if (error) reject(error); else resolve(value);
+      };
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      if (signal?.aborted) return onAbort();
+      this.pending.set(id, { finish });
+      child.stdin.write(`${JSON.stringify({ id, ...payload })}\n`, error => {
+        if (!error) return;
+        const failure = runtimeError(502, `${this.engine}_worker_write_failed`, `Não foi possível enviar texto ao worker TTS: ${sanitizeEngineError(error.message)}`);
+        finish(failure);
+        this.close(failure);
       });
     });
   }
 
-  close() {
+  close(reason = null) {
+    const error = reason || runtimeError(503, `${this.engine}_worker_stopped`, 'Worker TTS encerrado.');
+    this.closeReason = error;
+    this.finishStart?.(error);
+    for (const entry of [...this.pending.values()]) entry.finish(error);
     const child = this.child;
     this.child = null;
     this.ready = false;

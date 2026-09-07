@@ -40,6 +40,87 @@ class PreparedTts {
   cancel() { while (this.resolvers.length) this.finish(); }
 }
 
+class DeferredPrepareTts {
+  available = true;
+  prepared = [];
+  played = [];
+  preparing = 0;
+  maxPreparing = 0;
+  resolvers = [];
+  prepare(text) {
+    this.prepared.push(text);
+    this.preparing += 1;
+    this.maxPreparing = Math.max(this.maxPreparing, this.preparing);
+    return new Promise(resolve => {
+      this.resolvers.push(() => {
+        this.preparing -= 1;
+        resolve({ text });
+      });
+    });
+  }
+  async play(value, options) {
+    this.played.push(value.text);
+    options.onFirstAudio?.();
+  }
+  finishPrepare() { this.resolvers.shift()?.(); }
+  cancel() { while (this.resolvers.length) this.finishPrepare(); }
+}
+
+class GenerationDeferredTts {
+  available = true;
+  prepared = [];
+  resolvers = new Map();
+  prepare(text) {
+    this.prepared.push(text);
+    return new Promise(resolve => this.resolvers.set(text, () => resolve({ text })));
+  }
+  async play(value, options) { options.onFirstAudio?.(); this.played = [...(this.played || []), value.text]; }
+  resolve(text) { this.resolvers.get(text)?.(); this.resolvers.delete(text); }
+  cancel() {}
+}
+
+class ControlledFirstAudioTts {
+  available = true;
+  prepareStarted = false;
+  playStarted = false;
+  resolvePrepare = null;
+  resolvePlay = null;
+  firstAudio = null;
+  prepare(text) {
+    this.prepareStarted = true;
+    return new Promise(resolve => { this.resolvePrepare = () => resolve({ text }); });
+  }
+  play(_value, options) {
+    this.playStarted = true;
+    this.firstAudio = options.onFirstAudio;
+    return new Promise(resolve => { this.resolvePlay = resolve; });
+  }
+  emitFirstAudio() { this.firstAudio?.(); }
+  finish() { this.resolvePlay?.(); }
+  cancel() { this.resolvePrepare?.(); this.finish(); }
+}
+
+class SecondPrepareDeferredTts {
+  available = true;
+  prepared = [];
+  played = [];
+  playResolvers = [];
+  secondPrepare = null;
+  prepare(text) {
+    this.prepared.push(text);
+    if (this.prepared.length === 1) return Promise.resolve({ text });
+    return new Promise(resolve => { this.secondPrepare = () => resolve({ text }); });
+  }
+  play(value, options) {
+    this.played.push(value.text);
+    options.onFirstAudio?.();
+    return new Promise(resolve => this.playResolvers.push(resolve));
+  }
+  finishPlay() { this.playResolvers.shift()?.(); }
+  finishSecondPrepare() { this.secondPrepare?.(); this.secondPrepare = null; }
+  cancel() { this.finishSecondPrepare(); while (this.playResolvers.length) this.finishPlay(); }
+}
+
 class BusyPreparedTts {
   available = true;
   attempts = 0;
@@ -157,7 +238,7 @@ test('falha da saída de áudio não tenta outro sintetizador no mesmo dispositi
     onFallback: detail => fallbacks.push(detail)
   });
 
-  playback.enqueue('Resposta curta.', settings());
+  playback.enqueue('Resposta curta.', settings({ ttsEngine: 'kokoro' }));
   await tick();
   assert.deepEqual(piper.spoken, []);
   assert.deepEqual(fallbacks, []);
@@ -194,6 +275,168 @@ test('fila prepara no máximo o próximo trecho enquanto o atual toca', async ()
   await tick();
   tts.finish();
   await tick();
+});
+
+test('fila não inicia outro prepare enquanto o primeiro trecho ainda está sendo preparado', async t => {
+  const tts = new DeferredPrepareTts();
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  t.after(() => playback.cancel('test-cleanup'));
+
+  playback.enqueue('Primeiro trecho frio.', settings());
+  playback.enqueue('Segundo trecho da mesma resposta.', settings());
+  await tick();
+
+  assert.deepEqual(tts.prepared, ['Primeiro trecho frio.']);
+  assert.equal(tts.maxPreparing, 1);
+
+  tts.finishPrepare();
+  await tick();
+  assert.deepEqual(tts.prepared, ['Primeiro trecho frio.', 'Segundo trecho da mesma resposta.']);
+  assert.equal(tts.maxPreparing, 1);
+
+  tts.finishPrepare();
+  await tick();
+  assert.deepEqual(tts.played, ['Primeiro trecho frio.', 'Segundo trecho da mesma resposta.']);
+});
+
+test('prepare antigo cancelado não libera a trava da nova geração', async t => {
+  const tts = new GenerationDeferredTts();
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  t.after(() => playback.cancel('test-cleanup'));
+
+  playback.enqueue('Trecho antigo.', settings());
+  playback.cancel('novo-turno');
+  playback.enqueue('Primeiro trecho novo.', settings());
+  tts.resolve('Trecho antigo.');
+  await tick();
+  playback.enqueue('Segundo trecho novo.', settings());
+  await tick();
+
+  assert.deepEqual(tts.prepared, ['Trecho antigo.', 'Primeiro trecho novo.']);
+  tts.resolve('Primeiro trecho novo.');
+  await tick();
+  assert.deepEqual(tts.prepared, ['Trecho antigo.', 'Primeiro trecho novo.', 'Segundo trecho novo.']);
+  tts.resolve('Segundo trecho novo.');
+  await tick();
+});
+
+test('estado SPEAKING começa somente quando o primeiro áudio realmente inicia', async t => {
+  const input = new FakeInput();
+  const tts = new ControlledFirstAudioTts();
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  const controller = new VoiceConversationController({
+    settings: settings(), inputEngines: { local: { available: false }, browser: input }, playback
+  });
+  t.after(() => controller.stopAll('test-cleanup'));
+
+  controller.onChatStart();
+  controller.onChatDelta('Resposta ainda em preparação. ');
+  assert.equal(tts.prepareStarted, true);
+  assert.notEqual(controller.machine.current, 'SPEAKING');
+
+  tts.resolvePrepare();
+  await tick();
+  assert.equal(tts.playStarted, true);
+  assert.notEqual(controller.machine.current, 'SPEAKING');
+
+  tts.emitFirstAudio();
+  assert.equal(controller.machine.current, 'SPEAKING');
+
+  controller.onChatEnd();
+  tts.finish();
+  await tick();
+  controller.stopAll('test-complete');
+});
+
+test('preparar próximo trecho durante reprodução mantém o estado SPEAKING', async t => {
+  const input = new FakeInput();
+  const tts = new PreparedTts();
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  const controller = new VoiceConversationController({
+    settings: settings(), inputEngines: { local: { available: false }, browser: input }, playback
+  });
+  t.after(() => controller.stopAll('test-cleanup'));
+
+  controller.onChatStart();
+  controller.onChatDelta('Primeiro trecho já audível. ');
+  await tick();
+  assert.equal(controller.machine.current, 'SPEAKING');
+
+  controller.onChatDelta('Segundo trecho recebido pelo streaming. ');
+  await tick();
+  assert.equal(controller.machine.current, 'SPEAKING');
+  assert.deepEqual(tts.prepared, ['Primeiro trecho já audível.', 'Segundo trecho recebido pelo streaming.']);
+
+  controller.onChatEnd();
+  tts.finish();
+  await tick();
+  tts.finish();
+  await tick();
+});
+
+test('intervalo real entre trechos deixa de ser anunciado como fala', async t => {
+  const input = new FakeInput();
+  const tts = new SecondPrepareDeferredTts();
+  const playback = new AudioPlaybackController({ kokoro: tts });
+  const controller = new VoiceConversationController({
+    settings: settings(), inputEngines: { local: { available: false }, browser: input }, playback
+  });
+  t.after(() => controller.stopAll('test-cleanup'));
+
+  controller.onChatStart();
+  controller.onChatDelta('Primeiro trecho audível. ');
+  await tick();
+  controller.onChatDelta('Segundo trecho ainda sintetizando. ');
+  controller.onChatEnd();
+  await tick();
+  assert.equal(controller.machine.current, 'SPEAKING');
+
+  tts.finishPlay();
+  await tick();
+  assert.equal(controller.machine.current, 'PREPARING');
+
+  tts.finishSecondPrepare();
+  await tick();
+  assert.equal(controller.machine.current, 'SPEAKING');
+  tts.finishPlay();
+  await tick();
+});
+
+test('novo chat limpa o modo manual e volta a permitir barge-in', async t => {
+  const input = new FakeInput();
+  const tts = new FakeTts({ deferred: true });
+  const playback = new AudioPlaybackController({ piper: tts });
+  const controller = new VoiceConversationController({
+    settings: settings(), inputEngines: { local: { available: false }, browser: input }, playback
+  });
+  t.after(() => controller.stopAll('test-cleanup'));
+
+  controller.speakText('Teste manual anterior.');
+  await tick();
+  assert.equal(controller.manualSpeech, true);
+  controller.onChatStart();
+  controller.onChatDelta('Resposta nova em voz. ');
+  await tick();
+
+  assert.equal(controller.manualSpeech, false);
+  assert.equal(input.current()?.playbackActive, true);
+});
+
+test('métricas nulas de backend antigo não bloqueiam uma transcrição válida', async () => {
+  const input = new FakeInput();
+  const playback = new AudioPlaybackController({ piper: new FakeTts() });
+  const submitted = [];
+  const controller = new VoiceConversationController({
+    settings: settings({ autoSpeak: false }), inputEngines: { local: { available: false }, browser: input }, playback,
+    submitTranscript: text => submitted.push(text)
+  });
+
+  await controller.startConversation();
+  input.current().onSpeechStart({ engine: 'browser' });
+  input.current().onTranscribing({ engine: 'browser' });
+  input.current().onFinal('mensagem perfeitamente válida', { engine: 'browser', confidence: null, noSpeechProbability: null, rms: null });
+
+  assert.deepEqual(submitted, ['mensagem perfeitamente válida']);
 });
 
 test('sintetizador ocupado é aguardado sem perder ou reordenar o trecho', async () => {

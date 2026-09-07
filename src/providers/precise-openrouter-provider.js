@@ -5,6 +5,7 @@ import {
   allowParallelProjectToolCalls,
   isProjectMutationTool,
   isProjectReadTool,
+  preferredProjectMutationTools,
   projectToolCallRequired,
   projectToolChoice,
   projectToolPhase
@@ -46,6 +47,13 @@ function successfulReadEvidence(messages = []) {
   return count;
 }
 
+function latestUserRequest(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') return textContent(messages[index].content);
+  }
+  return '';
+}
+
 export function agenticToolsForMessages(tools = [], messages = []) {
   if (projectToolPhase(tools) !== 'mixed') return tools;
   const evidence = successfulReadEvidence(messages);
@@ -57,7 +65,10 @@ export function agenticToolsForMessages(tools = [], messages = []) {
     return reads.length ? reads : tools;
   }
   if (evidence < 2) return tools;
-  const mutations = tools.filter(tool => isProjectMutationTool(tool));
+  const mutations = preferredProjectMutationTools(tools, {
+    objective: latestUserRequest(messages),
+    hasReadEvidence: true
+  });
   return mutations.length ? mutations : tools;
 }
 

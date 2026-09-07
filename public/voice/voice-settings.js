@@ -7,24 +7,25 @@ export const DEFAULT_VOICE_SETTINGS = Object.freeze({
   preferLocal: false,
   sttEngine: 'auto',
   ttsEngine: 'auto',
-  quality: 'balanced',
+  quality: 'rapid',
+  adaptiveQuality: true,
   preset: 'natural',
   ttsVoice: 'pf_dora',
   rate: 1,
   vadThreshold: 0.018,
-  vadSilenceMs: 700
+  vadSilenceMs: 550
 });
 
 const enums = Object.freeze({
   sttEngine: ['auto', 'local', 'browser'],
-  ttsEngine: ['auto', 'kokoro', 'piper', 'chatterbox'],
+  ttsEngine: ['auto', 'system', 'kokoro', 'piper', 'chatterbox'],
   quality: ['rapid', 'balanced', 'accurate'],
   preset: ['natural', 'calm', 'expressive']
 });
 
 export function sanitizeVoiceSettings(value = {}) {
   const result = { ...DEFAULT_VOICE_SETTINGS };
-  for (const key of ['conversationMode', 'autoSpeak', 'autoSend', 'preferLocal']) {
+  for (const key of ['conversationMode', 'autoSpeak', 'autoSend', 'preferLocal', 'adaptiveQuality']) {
     if (typeof value[key] === 'boolean') result[key] = value[key];
   }
   for (const [key, choices] of Object.entries(enums)) {
@@ -33,7 +34,7 @@ export function sanitizeVoiceSettings(value = {}) {
   result.ttsVoice = ['pf_dora', 'pm_alex', 'pm_santa'].includes(value.ttsVoice) ? value.ttsVoice : DEFAULT_VOICE_SETTINGS.ttsVoice;
   result.rate = clamp(value.rate, 0.7, 1.6, 1);
   result.vadThreshold = clamp(value.vadThreshold, 0.006, 0.08, DEFAULT_VOICE_SETTINGS.vadThreshold);
-  result.vadSilenceMs = clamp(value.vadSilenceMs, 350, 1600, DEFAULT_VOICE_SETTINGS.vadSilenceMs);
+  result.vadSilenceMs = clamp(value.vadSilenceMs, 300, 1600, DEFAULT_VOICE_SETTINGS.vadSilenceMs);
   return result;
 }
 

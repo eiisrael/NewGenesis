@@ -22,15 +22,13 @@ $Checks = @(
 )
 
 Write-Host 'Diagnóstico local de voz do NewGenesis (nenhum áudio será capturado).'
-$computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-$processor = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($processor) { Write-Host "CPU: $($processor.Name) · $($processor.NumberOfCores) núcleos / $($processor.NumberOfLogicalProcessors) threads" }
-if ($computer) { Write-Host ('RAM instalada: {0:N1} GB' -f ($computer.TotalPhysicalMemory / 1GB)) }
+$processorName = try { (Get-ItemProperty -LiteralPath 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -ErrorAction Stop).ProcessorNameString.Trim() } catch { $env:PROCESSOR_IDENTIFIER }
+$logicalProcessors = [Environment]::ProcessorCount
+Write-Host "CPU: $processorName · $logicalProcessors threads disponíveis"
 $nvidia = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
 if ($nvidia) { & $nvidia.Source --query-gpu=name,memory.total,driver_version --format=csv,noheader }
 else {
   Write-Host 'GPU NVIDIA/CUDA: não detectada.'
-  Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "GPU detectada: $($_.Name) · driver $($_.DriverVersion)" }
   Write-Host 'O binário oficial instalado do whisper.cpp é CPU. Vulkan exige build separado e benchmark antes de ser promovido.'
 }
 
@@ -41,8 +39,7 @@ foreach ($check in $Checks) {
   } else { Write-Host "[--] $($check.Name)" }
 }
 
-$ram = if ($computer) { $computer.TotalPhysicalMemory / 1GB } else { 0 }
-$recommendation = if ($ram -ge 24) { 'balanceado; avalie alta precisão somente após benchmark' } elseif ($ram -ge 12) { 'balanceado' } else { 'rápido' }
+$recommendation = if ($logicalProcessors -le 4) { 'rápido' } elseif ($logicalProcessors -le 8) { 'rápido ou balanceado, conforme o benchmark' } else { 'balanceado; avalie alta precisão somente após benchmark' }
 Write-Host "Recomendação conservadora de STT: $recommendation. A escolha final depende do benchmark no seu microfone."
 Write-Host 'Kokoro e Piper usam workers persistentes; whisper-server mantém o modelo STT carregado. O primeiro uso inclui aquecimento.'
 Write-Host 'Execute: npm start; abra Voz; use “Testar microfone” e “Testar voz do Genesis”. Essas ações pedem permissão ao usuário.'

@@ -29,6 +29,6 @@ test('duas evidências encerram exploração e deixam somente mutação', () => 
     { role: 'tool', name: 'read_project_file', content: '{"ok":true,"path":"index.html","content":"ASTRAEON"}' }
   ];
   const effective = agenticToolsForMessages(tools, messages);
-  assert.deepEqual(effective.map(item => item.function.name), ['replace_project_text', 'write_project_file']);
+  assert.deepEqual(effective.map(item => item.function.name), ['replace_project_text']);
   assert.equal(projectToolActionRequired(tools, effective), true);
 });

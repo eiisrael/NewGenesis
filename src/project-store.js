@@ -731,14 +731,42 @@ export class ProjectStore {
     const prefix = options.path ? normalizedPath(options.path).toLowerCase() : '';
     const limit = Math.max(1, Math.min(Number(options.limit) || 40, 100));
     const matches = [];
+    let snapshotChanged = false;
     for (const file of this.project.files) {
       if (prefix && !file.path.toLowerCase().startsWith(prefix)) continue;
-      const lines = file.content.split(/\r?\n/);
+      let currentContent = file.content;
+      if (this.project.rootPath) {
+        try {
+          currentContent = await this.readText(file.path);
+          if (currentContent !== file.content) {
+            file.content = currentContent;
+            file.size = Buffer.byteLength(currentContent);
+            file.lines = currentContent ? currentContent.split(/\r?\n/).length : 0;
+            snapshotChanged = true;
+          }
+        } catch (error) {
+          if (error?.code === 'project_path_not_found') continue;
+          throw error;
+        }
+      }
+      const lines = currentContent.split(/\r?\n/);
       for (let index = 0; index < lines.length; index += 1) {
         if (!lines[index].toLowerCase().includes(needle)) continue;
         matches.push({ path: file.path, line: index + 1, text: lines[index].trim().slice(0, 300) });
-        if (matches.length >= limit) return matches;
+        if (matches.length >= limit) break;
       }
+      if (matches.length >= limit) break;
+    }
+    if (snapshotChanged) {
+      this.project.totalBytes = this.project.files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+      this.project.totalLines = this.project.files.reduce((sum, file) => sum + Number(file.lines || 0), 0);
+      this.project.technologies = detectTechnologies(this.project.files);
+      this.project.updatedAt = new Date().toISOString();
+      this.project.inventory = normalizedInventory(this.project, {
+        ...this.project.inventory,
+        updatedAt: this.project.updatedAt
+      });
+      await this.persist();
     }
     return matches;
   }
@@ -792,6 +820,7 @@ export class ProjectStore {
       cursor = found + needle.length;
     }
     if (occurrences !== expected) {
+      if (occurrences === 0 && inserted === '') return 0;
       throw projectError(`A edição esperava ${expected} ocorrência(s), mas encontrou ${occurrences}. Leia novamente o trecho antes de alterar.`, 'project_replacement_mismatch', 409);
     }
     const updated = source.split(needle).join(inserted);

@@ -46,7 +46,7 @@ export function waveDurationSeconds(buffer) {
   return byteRate && dataBytes ? dataBytes / byteRate : null;
 }
 
-async function runSentence(baseUrl, text, ttsEngine) {
+async function runSentence(baseUrl, text, ttsEngine, sttProfile) {
   const headers = { 'x-genesis-client': 'web' };
   const ttsStarted = performance.now();
   const ttsResponse = await fetch(`${baseUrl}/api/voice/synthesize`, {
@@ -59,7 +59,7 @@ async function runSentence(baseUrl, text, ttsEngine) {
   const audioSeconds = waveDurationSeconds(audio);
 
   const sttStarted = performance.now();
-  const sttResponse = await fetch(`${baseUrl}/api/voice/transcribe?quality=balanced`, {
+  const sttResponse = await fetch(`${baseUrl}/api/voice/transcribe?quality=${encodeURIComponent(sttProfile)}&segmented=1`, {
     method: 'POST', headers: { ...headers, 'content-type': 'audio/wav' }, body: audio
   });
   if (!sttResponse.ok) throw new Error(`Whisper falhou (${sttResponse.status}): ${await sttResponse.text()}`);
@@ -83,19 +83,21 @@ async function runSentence(baseUrl, text, ttsEngine) {
 async function main() {
   const baseUrl = String(process.argv[2] || 'http://127.0.0.1:7331').replace(/\/$/, '');
   const ttsEngine = String(process.argv[3] || 'piper').toLowerCase();
+  const sttProfile = String(process.argv[4] || 'rapid').toLowerCase();
   if (!['piper', 'kokoro'].includes(ttsEngine)) throw new Error('Escolha TTS piper ou kokoro.');
+  if (!['rapid', 'balanced', 'accurate'].includes(sttProfile)) throw new Error('Escolha STT rapid, balanced ou accurate.');
   const statusResponse = await fetch(`${baseUrl}/api/voice/status`);
   if (!statusResponse.ok) throw new Error(`NewGenesis não respondeu em ${baseUrl}.`);
   const status = await statusResponse.json();
-  if (!status.stt?.whisper?.available || !status.tts?.[ttsEngine]?.available) throw new Error(`O benchmark requer Whisper e ${ttsEngine} locais instalados.`);
+  if (!status.stt?.whisper?.profiles?.[sttProfile]?.available || !status.tts?.[ttsEngine]?.available) throw new Error(`O benchmark requer Whisper ${sttProfile} e ${ttsEngine} locais instalados.`);
   const results = [];
-  for (const sentence of DEFAULT_SENTENCES) results.push(await runSentence(baseUrl, sentence, ttsEngine));
+  for (const sentence of DEFAULT_SENTENCES) results.push(await runSentence(baseUrl, sentence, ttsEngine, sttProfile));
   process.stdout.write(`${JSON.stringify({
     kind: 'synthetic-loopback',
     warning: `Áudio gerado pelo ${ttsEngine}; isto não mede microfone, ruído, sotaque humano ou qualidade perceptual.`,
     collectedAt: new Date().toISOString(),
     hardware: { platform: `${os.platform()} ${os.release()} ${os.arch()}`, cpu: os.cpus()[0]?.model || 'desconhecida', logicalProcessors: os.cpus().length, totalRamBytes: os.totalmem() },
-    engines: { stt: `whisper.cpp ${status.stt.whisper.version} / small-q5_1 / Silero VAD`, tts: ttsEngine, processMode: status.tts[ttsEngine].processMode },
+    engines: { stt: `whisper.cpp ${status.stt.whisper.version} / ${sttProfile}`, tts: ttsEngine, processMode: status.tts[ttsEngine].processMode },
     results
   }, null, 2)}\n`);
 }

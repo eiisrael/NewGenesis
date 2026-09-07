@@ -3,7 +3,7 @@ param(
   [ValidateSet('whisper', 'piper', 'kokoro', 'chatterbox', 'all')]
   [string]$Component = 'whisper',
   [ValidateSet('rapid', 'balanced', 'accurate')]
-  [string]$Profile = 'balanced',
+  [string]$Profile = 'rapid',
   [ValidateSet('cpu', 'cuda128')]
   [string]$TorchBackend = 'cpu',
   [Alias('PythonPath')]
@@ -20,7 +20,7 @@ $ModelDir = Join-Path $VoiceDir 'models\whisper'
 $BinDir = Join-Path $VoiceDir 'bin'
 
 $WhisperProfiles = @{
-  rapid = @{ File = 'ggml-base-q5_1.bin'; Bytes = 59721011; Sha256 = '422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898' }
+  rapid = @{ File = 'ggml-base-q5_1.bin'; Bytes = 59707625; Sha256 = '422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898' }
   balanced = @{ File = 'ggml-small-q5_1.bin'; Bytes = 190085487; Sha256 = 'ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb' }
   accurate = @{ File = 'ggml-medium-q5_0.bin'; Bytes = 539212467; Sha256 = '19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f' }
 }
@@ -91,7 +91,7 @@ function Write-Manifest {
     whisper = @{
       version = '1.8.6'; binary = 'bin/whisper-cli.exe'; serverBinary = 'bin/whisper-server.exe'; vadModel = 'models/whisper/ggml-silero-v6.2.0.bin'
       profiles = @{
-        rapid = @{ model = 'models/whisper/ggml-base-q5_1.bin'; downloadBytes = 59721011 }
+        rapid = @{ model = 'models/whisper/ggml-base-q5_1.bin'; downloadBytes = 59707625 }
         balanced = @{ model = 'models/whisper/ggml-small-q5_1.bin'; downloadBytes = 190085487 }
         accurate = @{ model = 'models/whisper/ggml-medium-q5_0.bin'; downloadBytes = 539212467 }
       }

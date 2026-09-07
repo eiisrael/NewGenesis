@@ -52,6 +52,23 @@ test('duas evidências úteis encerram exploração e expõem somente escrita', 
     { role: 'tool', name: 'read_project_file', content: JSON.stringify({ ok: true, path: 'src/app.js', content: 'trecho' }) }
   ];
   assert.deepEqual(agenticToolsForMessages(tools, messages).map(item => item.function.name), [
-    'replace_project_text', 'write_project_file'
+    'replace_project_text'
   ]);
+});
+
+test('edição localizada força somente substituição mesmo com todas as mutações disponíveis', () => {
+  const tools = [
+    tool('search_project'), tool('read_project_file'), tool('replace_project_text'),
+    tool('write_project_file'), tool('create_project_directory'), tool('move_project_path'), tool('delete_project_path')
+  ];
+  const messages = [
+    { role: 'user', content: 'Remova do index.html tudo referente ao Editor Astral.' },
+    { role: 'tool', name: 'search_project', content: '{"ok":true,"matches":[{"path":"index.html","line":1}]}' },
+    { role: 'tool', name: 'read_project_file', content: '{"ok":true,"path":"index.html","content":"Editor Astral"}' }
+  ];
+  const effective = agenticToolsForMessages(tools, messages);
+  assert.deepEqual(effective.map(item => item.function.name), ['replace_project_text']);
+  assert.deepEqual(prepareAgenticToolRequest({ messages, tools: effective }).tool_choice, {
+    type: 'function', function: { name: 'replace_project_text' }
+  });
 });

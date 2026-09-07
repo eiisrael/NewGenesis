@@ -36,7 +36,8 @@ export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
   functionTool('read_project_file', 'Leia somente o trecho ainda necessário de um arquivo. Prefira search_project primeiro; evite varrer o arquivo inteiro e não releia faixas já conhecidas.', {
     path: { type: 'string', description: 'Caminho relativo, por exemplo src/app.js.' },
     start_line: { type: 'integer', minimum: 1, description: 'Primeira linha, padrão 1.' },
-    end_line: { type: 'integer', minimum: 1, description: 'Última linha; a ferramenta limita cada leitura a no máximo 220 linhas.' }
+    end_line: { type: 'integer', minimum: 1, description: 'Última linha; a ferramenta limita cada leitura a no máximo 220 linhas.' },
+    start_character: { type: 'integer', minimum: 0, description: 'Deslocamento opcional para continuar arquivos minificados ou linhas muito longas. Use nextStartCharacter retornado pela leitura anterior.' }
   }, ['path']),
   functionTool('write_project_file', 'Crie ou substitua um arquivo de texto no projeto. Use para arquivo novo ou quando uma substituição localizada não for adequada. Envie o conteúdo completo final.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo.' },
@@ -230,12 +231,14 @@ export class ProjectToolExecutor {
     }
 
     if (privileged && this.permissionStore.mode === 'ask') {
+      const approvalStartedAt = Date.now();
       const approval = this.approvalManager.request({ conversationId, operation, signal });
       onEvent('approval_required', { approvalId: approval.id, ...operation });
       const decision = await approval.promise;
+      operation.approvalWaitMs = Math.max(0, Date.now() - approvalStartedAt);
       if (decision !== 'approve') {
         onEvent('tool_denied', operation);
-        return { ok: false, denied: true, message: 'O usuário negou esta alteração.' };
+        return { ok: false, denied: true, approvalWaitMs: operation.approvalWaitMs, message: 'O usuário negou esta alteração.' };
       }
       onEvent('approval_resolved', { approvalId: approval.id, decision: 'approve', ...operation });
     }
@@ -244,11 +247,11 @@ export class ProjectToolExecutor {
     try {
       const result = await this.run(name, args, signal);
       onEvent('tool_complete', { ...operation, summary: result.summary || 'Operação concluída.' });
-      return { ok: true, ...result };
+      return { ok: true, approvalWaitMs: operation.approvalWaitMs || 0, ...result };
     } catch (error) {
       const message = error?.message || 'Falha ao executar a ferramenta.';
       onEvent('tool_failed', { ...operation, message });
-      return { ok: false, error: message, code: error?.code || 'project_tool_error' };
+      return { ok: false, approvalWaitMs: operation.approvalWaitMs || 0, error: message, code: error?.code || 'project_tool_error' };
     }
   }
 
@@ -276,13 +279,33 @@ export class ProjectToolExecutor {
     }
     if (name === 'read_project_file') {
       const content = await this.projectStore.readText(args.path);
+      if (args.start_character !== undefined && args.start_character !== null) {
+        const startCharacter = Math.max(0, Math.min(content.length, Number(args.start_character) || 0));
+        const endCharacter = Math.min(content.length, startCharacter + 8_000);
+        const rawExcerpt = content.slice(startCharacter, endCharacter);
+        const sanitized = sanitizeModelText(rawExcerpt, { maxCharacters: 8_000, maxLineCharacters: 8_000 });
+        const nextStartCharacter = endCharacter < content.length ? endCharacter : null;
+        return {
+          path: args.path,
+          startCharacter,
+          endCharacter,
+          nextStartCharacter,
+          totalCharacters: content.length,
+          content: sanitized.text,
+          truncated: sanitized.changed || nextStartCharacter !== null,
+          omittedOpaqueCharacters: sanitized.removedOpaqueCharacters,
+          omittedDataUris: sanitized.dataUriCount,
+          summary: `${args.path} · caracteres ${startCharacter}-${endCharacter} de ${content.length}. Próximo caractere: ${nextStartCharacter ?? 'fim'}.`
+        };
+      }
       const lines = content.split(/\r?\n/);
       const startLine = Math.max(1, Number(args.start_line || 1));
       const requestedEnd = Number(args.end_line || startLine + 159);
       const endLine = Math.min(lines.length, Math.max(startLine, requestedEnd), startLine + 219);
       const rawExcerpt = lines.slice(startLine - 1, endLine).join('\n');
+      const hasLongLine = rawExcerpt.split(/\r?\n/).some(line => line.length > 2_000);
       const sanitized = sanitizeModelText(rawExcerpt, { maxCharacters: 8_000, maxLineCharacters: 2_000 });
-      const truncated = sanitized.changed || endLine < lines.length;
+      const truncated = sanitized.changed || hasLongLine || endLine < lines.length;
       return {
         path: args.path,
         startLine,
@@ -293,15 +316,38 @@ export class ProjectToolExecutor {
         truncated,
         omittedOpaqueCharacters: sanitized.removedOpaqueCharacters,
         omittedDataUris: sanitized.dataUriCount,
-        summary: `${args.path} · linhas ${startLine}-${endLine}${endLine < lines.length ? ` de ${lines.length}` : ''}. Próxima linha: ${endLine < lines.length ? endLine + 1 : 'fim'}.`
+        summary: `${args.path} · linhas ${startLine}-${endLine}${endLine < lines.length ? ` de ${lines.length}` : ''}. Próxima linha: ${endLine < lines.length ? endLine + 1 : 'fim'}.${hasLongLine ? ' Há linha longa compactada; continue por start_character para ler o conteúdo omitido.' : ''}`
       };
     }
     if (name === 'write_project_file') {
+      if (typeof this.projectStore.readText === 'function') {
+        let existing = null;
+        try { existing = await this.projectStore.readText(args.path); }
+        catch (error) {
+          if (!['project_path_not_found', 'ENOENT'].includes(error?.code)) throw error;
+        }
+        const nextContent = String(args.content ?? '');
+        const removedCharacters = existing === null ? 0 : existing.length - nextContent.length;
+        if (existing !== null && existing.length >= 2_000 && removedCharacters >= 2_000 && nextContent.length < existing.length * 0.5) {
+          throw toolError(
+            `Reescrita destrutiva bloqueada: ${existing.length} → ${nextContent.length} caracteres. Use replace_project_text para alterar somente o trecho solicitado.`,
+            'project_destructive_rewrite'
+          );
+        }
+      }
       await this.projectStore.writeText(args.path, args.content);
       return { path: args.path, summary: `${args.path} atualizado com segurança.` };
     }
     if (name === 'replace_project_text') {
       const replacements = await this.projectStore.replaceText(args.path, args.old_text, args.new_text, args.expected_replacements);
+      if (replacements === 0 && args.new_text === '') {
+        return {
+          path: args.path,
+          replacements,
+          alreadySatisfied: true,
+          summary: `${args.path} já não continha o trecho solicitado; o resultado desejado já estava aplicado no disco.`
+        };
+      }
       return { path: args.path, replacements, summary: `${args.path} atualizado em ${replacements} trecho${replacements === 1 ? '' : 's'} exato${replacements === 1 ? '' : 's'}.` };
     }
     if (name === 'create_project_directory') {

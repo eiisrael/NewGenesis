@@ -75,6 +75,7 @@ test('abre uma pasta editável e mantém todas as alterações dentro do projeto
   assert.match(await fs.readFile(path.join(projectDirectory, 'src', 'app.js'), 'utf8'), /value = 2/);
   assert.equal(await store.replaceText('src/app.js', 'value = 2', 'value = 3'), 1);
   assert.match(await fs.readFile(path.join(projectDirectory, 'src', 'app.js'), 'utf8'), /value = 3/);
+  assert.equal(await store.replaceText('src/app.js', 'trecho já ausente', ''), 0);
   await assert.rejects(() => store.replaceText('src/app.js', 'value = 2', 'value = 4'), error => error.code === 'project_replacement_mismatch');
   assert.match(await fs.readFile(path.join(projectDirectory, 'src', 'app.js'), 'utf8'), /value = 3/);
   await store.movePath('src/app.js', 'src/main.js');
@@ -85,4 +86,26 @@ test('abre uma pasta editável e mantém todas as alterações dentro do projeto
   await fs.writeFile(path.join(projectDirectory, 'protected', '.env'), 'SECRET=x');
   await assert.rejects(() => store.deletePath('protected'), error => error.code === 'sensitive_project_file');
   assert.equal(await fs.stat(path.join(projectDirectory, 'protected', '.env')).then(() => true), true);
+});
+
+test('busca em pasta editável sincroniza alterações externas antes de responder', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-project-live-search-'));
+  const dataDirectory = path.join(directory, 'data');
+  const projectDirectory = path.join(directory, 'workspace');
+  await fs.mkdir(dataDirectory, { recursive: true });
+  await fs.mkdir(projectDirectory, { recursive: true });
+  const file = path.join(projectDirectory, 'index.html');
+  await fs.writeFile(file, '<!-- Editor Astral --><main>Jogo</main>\n');
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+
+  const store = await new ProjectStore(dataDirectory).init();
+  await store.openPath(projectDirectory);
+  await fs.writeFile(file, '<main>Nova jornada</main>\n');
+
+  assert.deepEqual(await store.search('Editor Astral'), []);
+  assert.equal((await store.search('Nova jornada')).length, 1);
+  assert.match(store.contextFor('Nova jornada').text, /Nova jornada/);
+
+  const restored = await new ProjectStore(dataDirectory).init();
+  assert.match(restored.contextFor('Nova jornada').text, /Nova jornada/);
 });

@@ -197,6 +197,8 @@ const unsupportedVoice = `
   Object.defineProperty(window, 'SpeechRecognition', { configurable: true, value: undefined });
   Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, value: undefined });
   Object.defineProperty(window, 'AudioContext', { configurable: true, value: undefined });
+  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: undefined });
+  Object.defineProperty(window, 'SpeechSynthesisUtterance', { configurable: true, value: undefined });
 `;
 
 if (process.argv[1] === path.resolve(import.meta.filename)) {
@@ -256,6 +258,9 @@ if (process.argv[1] === path.resolve(import.meta.filename)) {
       const conversation = await evaluate(cdp, `(async () => {
         const wait = () => new Promise(resolve => setTimeout(resolve, 0));
         const mode = document.querySelector('#voiceConversationMode');
+        const ttsEngine = document.querySelector('#voiceTtsEngine');
+        ttsEngine.value = 'kokoro';
+        ttsEngine.dispatchEvent(new Event('change', { bubbles: true }));
         mode.checked = true;
         mode.dispatchEvent(new Event('change', { bubbles: true }));
         await wait();

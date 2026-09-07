@@ -27,10 +27,12 @@ test('solicita aprovação antes de gravar e respeita aprovar ou negar', async t
   }, { conversationId: 'conversation', onEvent: (event, payload) => events.push({ event, payload }) });
 
   const approved = call('# Depois\n');
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 15));
   const firstApproval = events.find(item => item.event === 'approval_required').payload.approvalId;
   approvalManager.decide(firstApproval, 'approve');
-  assert.equal((await approved).ok, true);
+  const approvedResult = await approved;
+  assert.equal(approvedResult.ok, true);
+  assert.ok(approvedResult.approvalWaitMs >= 10);
   assert.equal(await fs.readFile(path.join(projectDirectory, 'README.md'), 'utf8'), '# Depois\n');
 
   events.length = 0;

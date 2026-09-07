@@ -1,10 +1,11 @@
 export class AudioPlaybackController {
-  constructor({ kokoro, chatterbox, piper, onPrepare, onRetry, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError, busyRetryDelays } = {}) {
-    this.engines = { kokoro, chatterbox, piper };
+  constructor({ kokoro, chatterbox, piper, system, onPrepare, onRetry, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError, busyRetryDelays } = {}) {
+    this.engines = { kokoro, chatterbox, piper, system };
     this.callbacks = { onPrepare, onRetry, onStart, onFirstAudio, onEnd, onIdle, onFallback, onError };
-    this.busyRetryDelays = Array.isArray(busyRetryDelays) ? [...busyRetryDelays] : [250, 500, 1000, 1500, 2000, 2500, 3000];
+    this.busyRetryDelays = Array.isArray(busyRetryDelays) ? [...busyRetryDelays] : [150, 350, 700];
     this.queue = [];
     this.running = false;
+    this.preparingByGeneration = new Map();
     this.generation = 0;
     this.lastSpokenText = '';
   }
@@ -36,7 +37,6 @@ export class AudioPlaybackController {
     const generation = this.generation;
     while (this.queue.length && generation === this.generation) {
       const item = this.queue.shift();
-      this.lastSpokenText = item.text;
       const selected = item.selected || selectEngine(item.settings, this.engines);
       if (!selected) {
         this.#failPlayback(voiceError('tts_unavailable', 'Nenhum engine de voz compatível está disponível.'));
@@ -45,6 +45,7 @@ export class AudioPlaybackController {
       try {
         const prepared = item.preparation ? await item.preparation : await this.#prepare(item, selected, { generation });
         if (generation !== this.generation) break;
+        this.lastSpokenText = item.text;
         this.callbacks.onStart?.({ engine: selected.name, text: item.text });
         this.#prime();
         await playSelected(selected, item, prepared, () => this.callbacks.onFirstAudio?.({ engine: selected.name }));
@@ -64,6 +65,7 @@ export class AudioPlaybackController {
         try {
           const prepared = await this.#prepare(item, fallback, { replace: true, generation });
           if (generation !== this.generation) break;
+          this.lastSpokenText = item.text;
           this.callbacks.onStart?.({ engine: fallback.name, text: item.text });
           this.#prime();
           await playSelected(fallback, item, prepared, () => this.callbacks.onFirstAudio?.({ engine: fallback.name }));
@@ -82,6 +84,11 @@ export class AudioPlaybackController {
   }
 
   #prime() {
+    // The runtime has a single synthesis lane. The item currently being drained
+    // is no longer present in `queue`, so queue.some(preparation) alone cannot
+    // see its in-flight preparation. Track it explicitly to avoid self-induced
+    // 429/busy retries when a streaming response adds another sentence.
+    if ((this.preparingByGeneration.get(this.generation) || 0) > 0) return;
     if (this.queue.some(item => item.preparation)) return;
     const next = this.queue.find(item => !item.preparation);
     if (!next) return;
@@ -97,18 +104,25 @@ export class AudioPlaybackController {
       item.selected = selected;
       item.preparation = null;
     }
+    this.preparingByGeneration.set(generation, (this.preparingByGeneration.get(generation) || 0) + 1);
     this.callbacks.onPrepare?.({ engine: selected.name, text: item.text });
-    if (typeof selected.engine.prepare !== 'function') return null;
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await selected.engine.prepare(item.text, item.settings);
-      } catch (error) {
-        const delayMs = this.busyRetryDelays[attempt];
-        if (error?.code !== 'voice_tts_busy' || delayMs == null || generation !== this.generation) throw error;
-        this.callbacks.onRetry?.({ engine: selected.name, text: item.text, attempt: attempt + 1, delayMs, error });
-        await waitForRetry(delayMs);
-        if (generation !== this.generation) throw new DOMException('Síntese cancelada.', 'AbortError');
+    try {
+      if (typeof selected.engine.prepare !== 'function') return null;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          return await selected.engine.prepare(item.text, item.settings);
+        } catch (error) {
+          const delayMs = this.busyRetryDelays[attempt];
+          if (error?.code !== 'voice_tts_busy' || delayMs == null || generation !== this.generation) throw error;
+          this.callbacks.onRetry?.({ engine: selected.name, text: item.text, attempt: attempt + 1, delayMs, error });
+          await waitForRetry(delayMs);
+          if (generation !== this.generation) throw new DOMException('Síntese cancelada.', 'AbortError');
+        }
       }
+    } finally {
+      const remaining = Math.max(0, (this.preparingByGeneration.get(generation) || 1) - 1);
+      if (remaining) this.preparingByGeneration.set(generation, remaining);
+      else this.preparingByGeneration.delete(generation);
     }
   }
 
@@ -124,14 +138,19 @@ export class AudioPlaybackController {
 function selectEngine(settings, engines) {
   const requested = settings.ttsEngine || 'auto';
   if (requested !== 'auto') return engines[requested]?.available ? { name: requested, engine: engines[requested] } : null;
-  if (engines.kokoro?.available) return { name: 'kokoro', engine: engines.kokoro };
+  // Prefer an already warm local worker. While workers are warming, a confirmed
+  // local system voice provides immediate speech instead of minutes of silence.
+  if (engines.piper?.available && engines.piper?.warm) return { name: 'piper', engine: engines.piper };
+  if (engines.kokoro?.available && engines.kokoro?.warm) return { name: 'kokoro', engine: engines.kokoro };
+  if (engines.system?.available) return { name: 'system', engine: engines.system };
   if (engines.piper?.available) return { name: 'piper', engine: engines.piper };
+  if (engines.kokoro?.available) return { name: 'kokoro', engine: engines.kokoro };
   if (engines.chatterbox?.available) return { name: 'chatterbox', engine: engines.chatterbox };
   return null;
 }
 
 function selectFallbackEngine(settings, engines, failed) {
-  for (const name of ['kokoro', 'piper', 'chatterbox']) {
+  for (const name of ['system', 'piper', 'kokoro', 'chatterbox']) {
     if (name !== failed && engines[name]?.available) return { name, engine: engines[name] };
   }
   return null;

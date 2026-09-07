@@ -4,6 +4,7 @@ import {
   BrowserSpeechInputEngine,
   LocalSpeechInputEngine,
   LocalTextToSpeechEngine,
+  SystemTextToSpeechEngine,
   readVoiceRuntimeStatus
 } from './voice/engines.js';
 import { normalizeSpokenText } from './voice/speech-normalizer.js';
@@ -20,6 +21,7 @@ let runtimeStatus = { available: false, stt: {}, tts: {} };
 let indicatorStartedAt = 0;
 let indicatorTimer = null;
 let indicatorHideTimer = null;
+let runtimeRefreshTimer = null;
 let lastMicrophoneNotice = { code: '', at: 0 };
 
 const browserInput = new BrowserSpeechInputEngine();
@@ -27,7 +29,8 @@ const localInput = new LocalSpeechInputEngine();
 const kokoroTts = new LocalTextToSpeechEngine({ engine: 'kokoro' });
 const chatterboxTts = new LocalTextToSpeechEngine({ engine: 'chatterbox' });
 const piperTts = new LocalTextToSpeechEngine({ engine: 'piper' });
-const playback = new AudioPlaybackController({ kokoro: kokoroTts, chatterbox: chatterboxTts, piper: piperTts });
+const systemTts = new SystemTextToSpeechEngine();
+const playback = new AudioPlaybackController({ kokoro: kokoroTts, chatterbox: chatterboxTts, piper: piperTts, system: systemTts });
 
 const controller = new VoiceConversationController({
   settings,
@@ -47,7 +50,7 @@ const copy = {
   preferLocal: 'Preferir voz 100% local', stt: 'Reconhecimento', tts: 'Voz do Genesis', quality: 'Qualidade do Whisper',
   preset: 'Expressividade', voice: 'Voz pt-BR', rate: 'Velocidade', testMic: 'Testar microfone', testVoice: 'Testar voz do Genesis',
   privacyBrowser: 'O fallback de reconhecimento pode usar um serviço do fornecedor do navegador. O áudio de saída usa somente engines locais.',
-  privacyLocal: 'Áudio local não é salvo nem incluído na telemetria. Arquivos temporários são apagados após cada transcrição.'
+  privacyLocal: 'Áudio local não é salvo nem incluído na telemetria. Arquivos temporários são apagados após cada transcrição. A voz rápida usa apenas uma voz pt-BR marcada como local pelo sistema.'
 };
 
 function iconMicrophone() {
@@ -74,7 +77,7 @@ function buildControls() {
       <label class="genesis-voice-option"><span>${copy.preferLocal}</span><input id="voicePreferLocal" type="checkbox"></label>
       <div class="genesis-voice-grid">
         <label class="genesis-voice-field"><span>${copy.stt}</span><select id="voiceSttEngine"><option value="auto">Automático</option><option value="local">Whisper local</option><option value="browser">Navegador</option></select></label>
-        <label class="genesis-voice-field"><span>${copy.tts}</span><select id="voiceTtsEngine"><option value="auto">Automático local</option><option value="kokoro">Kokoro-82M pt-BR</option><option value="piper">Piper pt-BR</option><option value="chatterbox">Chatterbox pt-BR</option></select></label>
+        <label class="genesis-voice-field"><span>${copy.tts}</span><select id="voiceTtsEngine"><option value="auto">Automático rápido</option><option value="system">Sistema pt-BR (imediato)</option><option value="piper">Piper pt-BR</option><option value="kokoro">Kokoro-82M pt-BR</option><option value="chatterbox">Chatterbox pt-BR</option></select></label>
         <label class="genesis-voice-field"><span>${copy.quality}</span><select id="voiceQuality"><option value="rapid">Rápido</option><option value="balanced">Balanceado</option><option value="accurate">Alta precisão</option></select></label>
         <label class="genesis-voice-field"><span>${copy.preset}</span><select id="voicePreset"><option value="natural">Natural</option><option value="calm">Calmo</option><option value="expressive">Expressivo</option></select></label>
       </div>
@@ -110,7 +113,7 @@ function bindControls() {
     event.stopPropagation();
     ui.voicePopover.hidden = !ui.voicePopover.hidden;
     ui.voiceOptionsButton.setAttribute('aria-expanded', String(!ui.voicePopover.hidden));
-    updateAvailability();
+    loadRuntimeStatus();
   });
   ui.voiceConversationMode.addEventListener('change', () => {
     settings.conversationMode = ui.voiceConversationMode.checked;
@@ -128,9 +131,15 @@ function bindControls() {
   for (const [element, key] of [[ui.voiceAutoSpeak, 'autoSpeak'], [ui.voiceAutoSend, 'autoSend'], [ui.voicePreferLocal, 'preferLocal']]) {
     element.addEventListener('change', () => { settings[key] = element.checked; persistSettings(); updateAvailability(); });
   }
-  for (const [element, key] of [[ui.voiceSttEngine, 'sttEngine'], [ui.voiceTtsEngine, 'ttsEngine'], [ui.voiceQuality, 'quality'], [ui.voicePreset, 'preset'], [ui.voiceSelect, 'ttsVoice']]) {
+  for (const [element, key] of [[ui.voiceSttEngine, 'sttEngine'], [ui.voiceTtsEngine, 'ttsEngine'], [ui.voicePreset, 'preset'], [ui.voiceSelect, 'ttsVoice']]) {
     element.addEventListener('change', () => { settings[key] = element.value; persistSettings(); updateAvailability(); });
   }
+  ui.voiceQuality.addEventListener('change', () => {
+    settings.quality = ui.voiceQuality.value;
+    settings.adaptiveQuality = false;
+    persistSettings();
+    updateAvailability();
+  });
   ui.voiceRate.addEventListener('input', () => {
     settings.rate = Number(ui.voiceRate.value) || 1;
     ui.voiceRateValue.textContent = `${settings.rate.toFixed(1)}×`;
@@ -143,7 +152,7 @@ function bindControls() {
     playback.unlock().catch(() => {});
     controller.speakText('Bom dia. O que você gostaria de fazer hoje?');
   });
-  document.addEventListener('pointerdown', () => { playback.unlock().catch(() => {}); }, { once: true });
+  document.addEventListener('pointerdown', () => { playback.unlock().catch(() => {}); }, { passive: true });
   document.addEventListener('click', event => {
     if (!event.target.closest('#genesisVoiceControl')) {
       ui.voicePopover.hidden = true;
@@ -187,12 +196,10 @@ function updateAvailability() {
   ui.voiceMicButton.disabled = composer.getAttribute('aria-busy') === 'true';
   ui.voiceMicButton.dataset.available = String(anyStt);
   ui.voiceConversationMode.disabled = !anyStt;
-  ui.voiceAutoSpeak.disabled = settings.preferLocal
-    ? !(kokoroTts.available || chatterboxTts.available || piperTts.available)
-    : !(kokoroTts.available || chatterboxTts.available || piperTts.available);
+  ui.voiceAutoSpeak.disabled = !(systemTts.available || kokoroTts.available || chatterboxTts.available || piperTts.available);
   for (const option of ui.voiceTtsEngine.options) {
     if (option.value === 'auto') continue;
-    option.disabled = !({ kokoro: kokoroTts, piper: piperTts, chatterbox: chatterboxTts }[option.value]?.available);
+    option.disabled = !({ system: systemTts, kokoro: kokoroTts, piper: piperTts, chatterbox: chatterboxTts }[option.value]?.available);
   }
   ui.voiceLocalVoiceField.hidden = !kokoroTts.available || !['auto', 'kokoro'].includes(settings.ttsEngine);
   ui.voicePreset.closest('.genesis-voice-field').hidden = settings.ttsEngine !== 'chatterbox';
@@ -204,14 +211,14 @@ function updateAvailability() {
 
 function engineSummary() {
   const stt = localInput.available ? 'Whisper local' : browserInput.available ? 'STT navegador' : 'sem STT';
-  const tts = kokoroTts.available ? 'Kokoro' : piperTts.available ? 'Piper' : chatterboxTts.available ? 'Chatterbox' : 'sem TTS local';
+  const tts = piperTts.warm ? 'Piper pronto' : systemTts.available ? 'voz rápida do sistema' : kokoroTts.warm ? 'Kokoro pronto' : piperTts.available ? 'Piper aquecendo' : chatterboxTts.available ? 'Chatterbox' : 'sem TTS local';
   return `${stt} · ${tts}`;
 }
 
 function renderState(event) {
   const states = {
     IDLE: 'Pronto', LISTENING: 'Ouvindo…', SPEECH_DETECTED: 'Fala detectada', TRANSCRIBING: 'Entendendo…',
-    THINKING: 'Gênesis está pensando…', SPEAKING: 'Gênesis está falando…', INTERRUPTING: 'Interrompido', ERROR: 'Erro de voz'
+    THINKING: 'Gênesis está pensando…', PREPARING: 'Preparando a voz…', SPEAKING: 'Gênesis está falando…', INTERRUPTING: 'Interrompido', ERROR: 'Erro de voz'
   };
   ui.voiceStateLabel.textContent = states[event.current] || event.current;
   ui.voiceStateDot.dataset.state = event.current;
@@ -219,7 +226,7 @@ function renderState(event) {
   ui.voiceMicButton.classList.toggle('listening', listening);
   ui.voiceMicButton.setAttribute('aria-pressed', String(listening));
   ui.voiceOptionsButton.classList.toggle('speaking', event.current === 'SPEAKING');
-  ui.voiceTestSpeech.disabled = event.current === 'SPEAKING';
+  ui.voiceTestSpeech.disabled = ['PREPARING', 'SPEAKING'].includes(event.current);
   showVoiceIndicator(event.current);
   updateAvailability();
 }
@@ -230,6 +237,7 @@ const VOICE_ACTION_LABELS = Object.freeze({
   SPEECH_DETECTED: 'Gênesis detectou sua fala…',
   TRANSCRIBING: 'Gênesis está entendendo…',
   THINKING: 'Gênesis está pensando…',
+  PREPARING: 'Gênesis está preparando a voz…',
   SPEAKING: 'Gênesis está falando…',
   INTERRUPTING: 'Gênesis foi interrompido…',
   ERROR: 'Gênesis encontrou um erro de voz.'
@@ -273,22 +281,33 @@ function renderStatus(status, detail) {
     idle: '', listening: 'Fale normalmente. O final da frase será detectado automaticamente.',
     'speech-detected': 'Fala detectada; continue falando.', transcribing: 'Transcrevendo localmente…', thinking: 'Mensagem enviada ao chat.',
     speaking: 'A resposta está sendo reproduzida. Você pode interromper falando.',
-    'tts-preparing': 'Preparando a voz local. O primeiro teste pode levar alguns segundos.',
-    'tts-waiting': `Aguardando o sintetizador concluir o trecho anterior${detail?.attempt ? ` (tentativa ${detail.attempt})` : ''}…`,
+    'tts-preparing': 'Preparando o próximo trecho de voz…',
+    'tts-ready': 'Áudio pronto; iniciando a reprodução…',
+    'tts-waiting': `Organizando a fila de voz${detail?.attempt ? ` (tentativa ${detail.attempt})` : ''}…`,
     'tts-busy': 'A voz local já está sendo preparada. Aguarde a reprodução.',
-    'microphone-ok': `Microfone funcionando via ${detail?.engine === 'local' ? 'Whisper local' : 'navegador'}. Reconhecido: “${detail?.transcript || ''}”`,
+    'microphone-ok': microphoneTestMessage(detail),
     'microphone-timeout': 'O microfone abriu, mas nenhuma fala foi detectada em 15 segundos. Verifique o dispositivo de entrada e o nível de volume do Windows.',
     interrupted: 'Reprodução cancelada; ouvindo sua nova pergunta.',
     'no-speech': controller.machine.current === 'LISTENING'
       ? 'Nenhuma fala detectada; o microfone continua ativo por alguns segundos.'
       : 'Nenhuma fala foi detectada.',
     'tts-fallback': detail?.to ? `Engine local indisponível; alternando para ${detail.to}.` : 'Alternando para outro engine local.',
-    'quality-adjusted': `Somente o perfil ${detail?.quality || 'disponível'} está instalado; as outras opções foram desativadas.`,
+    'quality-adjusted': detail?.reason === 'latency'
+      ? 'Whisper rápido selecionado automaticamente para reduzir a latência.'
+      : `Perfil ${detail?.quality || 'disponível'} selecionado porque a opção anterior não está instalada.`,
     unavailable: settings.preferLocal ? 'Instale o Whisper para usar o modo 100% local.' : 'Entrada por voz não está disponível neste navegador.',
+    'transcript-review': `A confiança da transcrição foi baixa. Revise antes de enviar: “${detail?.transcript || ''}”`,
     'barge-unavailable': 'Interrupção por voz indisponível neste engine.', 'chat-error': 'O chat não concluiu esta resposta.'
   };
   ui.voiceStatus.textContent = status === 'error' ? (detail?.message || 'Falha na camada de voz.') : (messages[status] || '');
   if (status === 'error') announceMicrophoneFailure(detail);
+}
+
+function microphoneTestMessage(detail = {}) {
+  const base = `Microfone funcionando via ${detail.engine === 'local' ? 'Whisper local' : 'navegador'}. Reconhecido: “${detail.transcript || ''}”`;
+  if (Number(detail.clippingRatio) >= 0.01) return `${base} O sinal está distorcendo; reduza o volume do microfone no Windows.`;
+  if (detail.rms != null && Number.isFinite(Number(detail.rms)) && Number(detail.rms) < 0.008) return `${base} O sinal está baixo; aproxime o microfone ou aumente o volume de entrada.`;
+  return `${base} Sinal de entrada adequado.`;
 }
 
 function renderMeter(level) {
@@ -358,9 +377,9 @@ function bindChat() {
 async function loadRuntimeStatus() {
   runtimeStatus = await readVoiceRuntimeStatus();
   localInput.setAvailable(runtimeStatus.stt?.whisper?.available === true);
-  chatterboxTts.setAvailable(runtimeStatus.tts?.chatterbox?.available === true);
-  piperTts.setAvailable(runtimeStatus.tts?.piper?.available === true);
-  kokoroTts.setAvailable(runtimeStatus.tts?.kokoro?.available === true);
+  chatterboxTts.setStatus(runtimeStatus.tts?.chatterbox);
+  piperTts.setStatus(runtimeStatus.tts?.piper);
+  kokoroTts.setStatus(runtimeStatus.tts?.kokoro);
   syncWhisperProfiles();
   updateAvailability();
 }
@@ -374,11 +393,17 @@ function syncWhisperProfiles() {
     option.title = installed ? `Modelo ${option.value} instalado.` : `Modelo ${option.value} não instalado.`;
     if (installed) available.push(option.value);
   }
-  if (available.length && !available.includes(settings.quality)) {
-    settings.quality = available.includes('balanced') ? 'balanced' : available[0];
+  const adaptive = settings.adaptiveQuality !== false && available.includes('rapid');
+  const targetQuality = adaptive
+    ? 'rapid'
+    : available.length && !available.includes(settings.quality)
+      ? (available.includes('balanced') ? 'balanced' : available[0])
+      : settings.quality;
+  if (targetQuality !== settings.quality) {
+    settings.quality = targetQuality;
     ui.voiceQuality.value = settings.quality;
     persistSettings();
-    renderStatus('quality-adjusted', { quality: settings.quality });
+    renderStatus('quality-adjusted', { quality: settings.quality, reason: adaptive ? 'latency' : 'availability' });
   }
 }
 
@@ -391,7 +416,11 @@ function bootstrapVoice() {
   bindChat();
   updateAvailability();
   loadRuntimeStatus();
-  window.addEventListener('beforeunload', () => controller.destroy());
+  runtimeRefreshTimer = setInterval(() => { loadRuntimeStatus().catch(() => {}); }, 10_000);
+  window.addEventListener('beforeunload', () => {
+    clearInterval(runtimeRefreshTimer);
+    controller.destroy();
+  });
   globalThis.__genesisVoice = { controller, runtimeStatus: () => runtimeStatus };
 }
 

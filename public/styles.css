@@ -52,6 +52,7 @@
 .genesis-voice-live>span[data-state="LISTENING"],.genesis-voice-live>span[data-state="SPEECH_DETECTED"]{background:#ef476f;box-shadow:0 0 0 4px rgba(239,71,111,.1)}
 .genesis-voice-live>span[data-state="TRANSCRIBING"],.genesis-voice-live>span[data-state="THINKING"]{background:#f59e0b}
 .genesis-voice-live>span[data-state="SPEAKING"]{background:#8b5cf6}
+.genesis-voice-live>span[data-state="PREPARING"]{background:#38bdf8}
 .genesis-voice-live>span[data-state="ERROR"]{background:#ef4444}
 .genesis-voice-live meter{width:100%;height:6px;accent-color:#8b5cf6}
 .genesis-voice-option{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}
@@ -433,6 +434,7 @@ kbd { font-family: inherit; font-size: 9px; color: var(--muted); border: 1px sol
 .voice-turn-indicator[data-state="SPEECH_DETECTED"] { --voice-state-color: var(--success); }
 .voice-turn-indicator[data-state="TRANSCRIBING"], .voice-turn-indicator[data-state="THINKING"] { --voice-state-color: var(--violet-bright); }
 .voice-turn-indicator[data-state="SPEAKING"] { --voice-state-color: var(--amber); }
+.voice-turn-indicator[data-state="PREPARING"] { --voice-state-color: #38bdf8; }
 .voice-turn-indicator[data-state="INTERRUPTING"], .voice-turn-indicator[data-state="ERROR"] { --voice-state-color: var(--danger); }
 .voice-turn-indicator[data-state="IDLE"] .voice-turn-dot, .voice-turn-indicator[data-state="ERROR"] .voice-turn-dot { animation: none; }
 @keyframes voiceTurnPulse { 50% { transform: scale(1.35); opacity: .55; } }

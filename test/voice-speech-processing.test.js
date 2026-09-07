@@ -27,6 +27,14 @@ test('correção de comando atua somente na transcrição de voz isolada', () =>
   assert.equal(normalizeVoiceTranscript('Explique por que continui apareceu.'), 'Explique por que continui apareceu.');
 });
 
+test('normaliza erros fonéticos estreitos do cumprimento ao Gênesis', () => {
+  assert.equal(normalizeVoiceTranscript('Volacionesis do bem.'), 'Olá, Gênesis, tudo bem?');
+  assert.equal(normalizeVoiceTranscript('Bom dia, preciso revisar volacionesis.txt'), 'Bom dia, preciso revisar volacionesis.txt');
+  assert.equal(normalizeVoiceTranscript('O que voca gostaria de fazer?'), 'O que você gostaria de fazer?');
+  assert.equal(normalizeVoiceTranscript('O que voca a gostaria de fazer?'), 'O que você gostaria de fazer?');
+  assert.equal(normalizeVoiceTranscript('Abra o arquivo voca.txt'), 'Abra o arquivo voca.txt');
+});
+
 test('normalização pt-BR torna datas, horas, versões e unidades pronunciáveis', () => {
   const spoken = normalizeSpokenText('Em 26/08/2026 às 12:30, a versão v2.3.1 marcou 29,4 °C e 68%. API pt-BR pronta.');
   assert.match(spoken, /26 de agosto de 2026/);

@@ -10,6 +10,16 @@ Todas as mudanças relevantes do NewGenesis serão documentadas neste arquivo.
 - Engines opcionais locais: whisper.cpp 1.8.6 + Silero VAD, Piper 1.4.2 pt-BR e adaptador experimental Chatterbox Multilingual V3 pt-BR.
 - Setup/diagnóstico Windows com venvs isolados, aceite de download, hashes, perfis e remoção limpa.
 - Métricas locais sem áudio, benchmark sintético/recurso e documentação completa de arquitetura, setup, privacidade e terceiros.
+- Saída imediata por voz pt-BR marcada como local pelo sistema enquanto os workers Piper/Kokoro aquecem.
+
+### Corrigido
+
+- A fila de sentenças não prepara mais dois chunks simultaneamente nem entra em sete colisões `voice_tts_busy`.
+- O runtime serializa TTS em FIFO, propaga cancelamento HTTP, usa deadlines absolutos e aquece Piper/Whisper sem bloquear a inicialização.
+- `SPEAKING` só é exibido quando o áudio realmente inicia; síntese e decodificação usam `PREPARING`.
+- Cancelamentos tardios de STT não reativam o microfone nem contaminam o turno seguinte.
+- A captura não duplica o frame inicial e reamostra para 16 kHz com filtragem antialias.
+- O perfil rápido é selecionado adaptativamente em CPUs de quatro threads, com revisão antes do envio em baixa confiança.
 
 ### Segurança
 

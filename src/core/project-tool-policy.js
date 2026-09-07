@@ -80,6 +80,37 @@ export function projectToolCallRequired(tools = []) {
   return ['mutation', 'verification'].includes(projectToolPhase(tools));
 }
 
+function normalizedObjective(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function onlyNamedTool(tools, name) {
+  const selected = tools.filter(tool => projectToolName(tool) === name);
+  return selected.length ? selected : null;
+}
+
+export function preferredProjectMutationTools(tools = [], { objective = '', hasReadEvidence = false } = {}) {
+  const mutations = tools.filter(tool => isProjectMutationTool(tool));
+  if (mutations.length <= 1) return mutations;
+
+  const text = normalizedObjective(objective);
+  const explicitDelete = /\b(exclu|delet|apag)\w*\b.{0,32}\b(arquivo|pasta|diretorio|caminho)\b/.test(text)
+    || /\bremov\w*\b.{0,20}\b(o|a|um|uma)\s+(arquivo|pasta|diretorio)\b/.test(text);
+  if (explicitDelete) return onlyNamedTool(mutations, 'delete_project_path') || mutations;
+  if (/\b(mov|renome)\w*\b.{0,40}\b(arquivo|pasta|diretorio|caminho)\b/.test(text)) {
+    return onlyNamedTool(mutations, 'move_project_path') || mutations;
+  }
+  if (/\b(cri|adic)\w*\b.{0,24}\b(pasta|diretorio)\b/.test(text)) {
+    return onlyNamedTool(mutations, 'create_project_directory') || mutations;
+  }
+  if (/\b(cri|adic)\w*\b.{0,24}\barquivo\b/.test(text)
+    || /\b(reescrev|substitu)\w*\b.{0,32}\barquivo\b/.test(text)) {
+    return onlyNamedTool(mutations, 'write_project_file') || mutations;
+  }
+  if (hasReadEvidence) return onlyNamedTool(mutations, 'replace_project_text') || mutations;
+  return mutations;
+}
+
 export function allowParallelProjectToolCalls(_tools = [], _providerSupportsParallel = false) {
   // Um agente de engenharia precisa observar o resultado real da etapa anterior
   // antes de decidir a próxima. Isso também impede leituras paginadas sobrepostas,

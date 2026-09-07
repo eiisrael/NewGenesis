@@ -41,6 +41,58 @@ test('read_project_file limita a leitura mesmo se o modelo pedir o arquivo intei
   assert.equal(result.nextStartLine, 320);
 });
 
+test('read_project_file sinaliza e pagina por caracteres uma linha minificada', async () => {
+  const source = `<main>${'x;'.repeat(4_500)}Editor Astral</main>`;
+  const store = { summary: () => ({ writable: true }), readText: async () => source };
+  const executor = executorWith(store);
+  const first = await executor.execute({ function: {
+    name: 'read_project_file', arguments: JSON.stringify({ path: 'index.html' })
+  }});
+  assert.equal(first.ok, true);
+  assert.equal(first.truncated, true);
+  assert.match(first.summary, /start_character/);
+
+  const continued = await executor.execute({ function: {
+    name: 'read_project_file', arguments: JSON.stringify({ path: 'index.html', start_character: 8_000 })
+  }});
+  assert.equal(continued.ok, true);
+  assert.equal(continued.startCharacter, 8_000);
+  assert.equal(continued.nextStartCharacter, null);
+  assert.match(continued.content, /Editor Astral/);
+});
+
+test('remoção já satisfeita é confirmada sem inventar uma nova gravação', async () => {
+  const store = {
+    summary: () => ({ writable: true }),
+    replaceText: async () => 0
+  };
+  const result = await executorWith(store).execute({ function: {
+    name: 'replace_project_text',
+    arguments: JSON.stringify({ path: 'index.html', old_text: 'Editor Astral', new_text: '' })
+  }});
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadySatisfied, true);
+  assert.equal(result.replacements, 0);
+  assert.match(result.summary, /já estava aplicado no disco/);
+});
+
+test('reescrita que destruiria a maior parte de um arquivo existente é bloqueada', async () => {
+  let written = false;
+  const store = {
+    summary: () => ({ writable: true }),
+    readText: async () => `<html>${'conteúdo;'.repeat(1_000)}</html>`,
+    writeText: async () => { written = true; }
+  };
+  const result = await executorWith(store).execute({ function: {
+    name: 'write_project_file',
+    arguments: JSON.stringify({ path: 'index.html', content: '<button>Novo jogo</button>' })
+  }});
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'project_destructive_rewrite');
+  assert.equal(written, false);
+  assert.match(result.error, /Reescrita destrutiva bloqueada/);
+});
+
 test('modo full executa verificação automática sem pedir aprovação', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-auto-check-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

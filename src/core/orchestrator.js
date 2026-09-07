@@ -4,6 +4,7 @@ import { buildContinuityLedger, estimateTokens, estimateRequestTokens, classifyI
 import { InferenceBudget, createUsageLedger, recordUsage, finalUsage } from './request-budget.js';
 import { sanitizeModelText } from './content-sanitizer.js';
 import { verifyTaskOutcome } from './task-verifier.js';
+import { preferredProjectMutationTools } from './project-tool-policy.js';
 
 const MUTATION_TOOL_NAMES = new Set([
   'write_project_file', 'replace_project_text', 'create_project_directory',
@@ -104,6 +105,10 @@ function summarizedToolContent(content) {
     startLine: value.startLine,
     endLine: value.endLine,
     nextStartLine: value.nextStartLine,
+    startCharacter: value.startCharacter,
+    endCharacter: value.endCharacter,
+    nextStartCharacter: value.nextStartCharacter,
+    totalCharacters: value.totalCharacters,
     totalLines: value.totalLines,
     truncated: value.truncated
   };
@@ -477,7 +482,7 @@ export class GenesisOrchestrator {
     });
     const usageLedger = _usageLedger || createUsageLedger();
     const configuredDeadlineMs = Math.max(10_000, Number(taskContract?.requestBudget?.deadlineMs || 90_000));
-    const deadlineAt = _deadlineAt || (Date.now() + configuredDeadlineMs);
+    let deadlineAt = _deadlineAt || (Date.now() + configuredDeadlineMs);
     const deadlineError = () => {
       const error = new GenesisUnavailableError('O tempo total seguro desta tarefa foi atingido; nenhuma nova rota gratuita será iniciada.', _attempts);
       error.code = 'task_deadline_exceeded';
@@ -742,7 +747,13 @@ export class GenesisOrchestrator {
               && (explorationPhase || mutationPhase || verificationPhase);
             let roundTools = [];
             if (canUseTools && mutationPhase) {
-              roundTools = tools.filter(tool => MUTATION_TOOL_NAMES.has(tool?.function?.name));
+              roundTools = preferredProjectMutationTools(tools, {
+                objective: taskContract?.objective,
+                hasReadEvidence: hasSuccessfulEvidence(
+                  _taskEvidence,
+                  item => ['search_project', 'read_project_file'].includes(item.tool)
+                )
+              });
               if (!mutationPrompted) {
                 workingMessages.push({
                   role: 'system',
@@ -897,6 +908,7 @@ export class GenesisOrchestrator {
               } else {
                 executedToolCalls.add(signature);
                 toolResult = await toolExecutor(toolCall, { signal });
+                deadlineAt += Math.max(0, Math.min(5 * 60 * 1000, Number(toolResult?.approvalWaitMs || 0)));
               }
               if (toolResult?.denied) deniedToolCalls.add(signature);
               _taskEvidence.push({
@@ -907,6 +919,7 @@ export class GenesisOrchestrator {
                 denied: toolResult?.denied === true,
                 skipped: toolResult?.skipped === true,
                 duplicate: toolResult?.duplicate === true,
+                alreadySatisfied: toolResult?.alreadySatisfied === true,
                 summary: String(toolResult?.summary || toolResult?.message || toolResult?.error || '').slice(0, 500),
                 code: toolResult?.code || null
               });

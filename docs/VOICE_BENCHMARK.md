@@ -2,9 +2,9 @@
 
 ## Resultado executado em 27 de agosto de 2026
 
-Hardware: Windows 10.0.19045 x64, Intel Core i5-4670K 3,40 GHz, 4 núcleos/4 threads, 25.468.071.936 bytes de RAM (~23,7 GiB), Radeon RX 460 4 GB + Intel HD 4600. Não havia NVIDIA/CUDA. O build oficial CPU do whisper.cpp foi usado; Vulkan não foi compilado.
+Hardware: Windows 10.0.19045 x64, Intel Core i5-4670K 3,40 GHz, 4 núcleos/4 threads, 25.537.277.952 bytes de RAM (~23,8 GiB), Radeon RX 460 4 GB + Intel HD 4600. Não havia NVIDIA/CUDA. O build oficial CPU do whisper.cpp foi usado; Vulkan não foi compilado.
 
-Engines instalados e hashes verificados: whisper.cpp 1.8.6, `small-q5_1` multilíngue (190.085.487 bytes), Silero VAD 6.2 (885.098 bytes), Kokoro-82M 1.0 com três vozes pt-BR e Piper 1.4.2 com `pt_BR-cadu-medium`. Chatterbox não foi baixado: exige mais de 3,21 GB de pesos e um ambiente Python separado.
+Engines instalados e hashes verificados: whisper.cpp 1.8.6, `base-q5_1` (59.707.625 bytes), `small-q5_1` (190.085.487 bytes), Silero VAD 6.2 (885.098 bytes), Kokoro-82M 1.0 com três vozes pt-BR e Piper 1.4.2 com `pt_BR-cadu-medium`. Chatterbox não foi baixado: exige mais de 3,21 GB de pesos e um ambiente Python separado.
 
 Os testes são **loopback sintético**: um TTS gera WAV e o mesmo buffer é enviado ao Whisper. Isso verifica integração, português, codificação, perfis, hashes, limpeza e capacidade computacional; não mede microfone, ruído, sotaque humano ou naturalidade percebida.
 
@@ -20,13 +20,16 @@ O primeiro teste reproduz exatamente a frase que falhava. Depois de forçar UTF-
 
 Para “Olá, tudo bem. Como vai você?”, a análise PCM mediu 1,800 s totais, maior silêncio interno de 75 ms e silêncio final de 55 ms. A limpeza remove somente silêncio externo; não reescreve o texto exibido.
 
-### Piper persistente
+### Piper persistente + Whisper `rapid` após a correção
 
 | Frase | TTS | Áudio | Whisper | RTF STT | WER normalizado |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| “Bom dia. O que você gostaria de fazer hoje?” | 739 ms | 3,641 s | 8.498 ms | 2,335 | 0,0000 |
-| “Encontrei três possíveis causas…” | 886 ms | 5,734 s | 8.883 ms | 1,552 | 0,0000 |
-| “Consegui terminar a análise…” | 889 ms | 5,267 s | 10.287 ms | 1,956 | 0,0000 |
+| “Bom dia. O que você gostaria de fazer hoje?” | 570 ms | 3,647 s | 4.392 ms | 1,206 | 0,0000 |
+| “Genesis está me ouvindo?” | 297 ms | 1,455 s | 4.527 ms | 3,118 | 0,0000 |
+| “Encontrei três possíveis causas…” | 860 ms | 5,644 s | 5.025 ms | 0,891 | 0,1429 |
+| “Consegui terminar a análise…” | 780 ms | 5,500 s | 4.635 ms | 0,845 | 0,0909 |
+
+O endpoint Piper aquecido gerou a saudação completa de controle em 0,81 s. Duas requisições simultâneas foram serializadas e concluíram com HTTP 200 em 371 ms e 702 ms, sem `voice_tts_busy`. No navegador real, o clique em **Testar voz do Genesis** atingiu o primeiro áudio em 878 ms, reproduziu até `tts_end` e voltou a `IDLE`, sem erro de console.
 
 ### Recursos nativos amostrados
 
@@ -42,7 +45,9 @@ CPU usa a diferença do tempo de processador dentro da janela observada, dividid
 
 ## Perfis Whisper
 
-Nesta instalação, somente `balanced` (`small-q5_1`) existe. Chamadas para `rapid` ou `accurate` retornaram HTTP 503 com `whisper_not_installed`; a UI desativou essas opções e manteve `balanced`. Assim, a interface não promete três qualidades quando há apenas um modelo físico.
+Nesta instalação, `rapid` (`base-q5_1`) e `balanced` (`small-q5_1`) existem; `accurate` permanece desativado. `rapid` é o padrão adaptativo neste CPU de quatro threads: os probes de 2,53–2,60 s foram transcritos em 4,17–4,90 s, com confiança entre 0,83 e 0,94. A troca fria para `balanced` transcreveu corretamente o mesmo probe em 15,94 s e usa um deadline próprio de 30 s; ao retornar para `rapid`, a latência foi 4,46 s.
+
+O WER do loopback rápido acima não é zero em todas as frases longas. A interface preserva a escolha manual `balanced` e só corrige padrões fonéticos estreitos já observados (`voca a gostaria` e o cumprimento colado ao nome Gênesis); conteúdo arbitrário, nomes de arquivo e texto técnico não recebem correção global.
 
 ## Reproduzir
 

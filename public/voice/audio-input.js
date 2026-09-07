@@ -71,6 +71,8 @@ export class MicrophoneAudioInput {
     this.sampleRate = 0;
     this.detector = null;
     this.captureMode = 'uninitialized';
+    this.generation = 0;
+    this.openPromise = null;
   }
 
   get available() {
@@ -79,7 +81,17 @@ export class MicrophoneAudioInput {
 
   async open() {
     if (this.#liveTrack()) return;
+    if (this.openPromise) return this.openPromise;
     if (this.stream || this.context) await this.close();
+    if (this.#liveTrack()) return;
+    if (this.openPromise) return this.openPromise;
+    const pending = this.#openFresh();
+    this.openPromise = pending;
+    try { await pending; }
+    finally { if (this.openPromise === pending) this.openPromise = null; }
+  }
+
+  async #openFresh() {
     if (!this.available) throw voiceError('microphone_unavailable', 'Captura local do microfone não está disponível neste navegador.');
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -143,15 +155,19 @@ export class MicrophoneAudioInput {
   }
 
   async arm(options = {}) {
+    const generation = ++this.generation;
     await this.open();
+    if (generation !== this.generation) return false;
     this.detector = new AdaptiveVoiceActivityDetector(options);
     this.frames = [];
     this.preRoll = [];
     this.playbackActive = options.playbackActive === true;
     this.armed = true;
+    return true;
   }
 
   disarm() {
+    this.generation += 1;
     this.armed = false;
     this.frames = [];
     this.preRoll = [];
@@ -164,6 +180,8 @@ export class MicrophoneAudioInput {
 
   async close() {
     this.disarm();
+    const pendingOpen = this.openPromise;
+    if (pendingOpen) await pendingOpen.catch(() => {});
     if (this.processor) this.processor.onaudioprocess = null;
     if (this.processor?.port) this.processor.port.onmessage = null;
     try { this.source?.disconnect(); } catch { /* já desconectado */ }
@@ -192,21 +210,33 @@ export class MicrophoneAudioInput {
     this.callbacks.onLevel?.(Math.min(1, rms * 8));
     if (!this.detector.speaking) {
       this.preRoll.push(frame);
-      const maxPreRollFrames = Math.max(2, Math.ceil(this.sampleRate * 0.3 / frame.length));
+      const maxPreRollFrames = Math.max(2, Math.ceil(this.sampleRate * 0.45 / frame.length));
       if (this.preRoll.length > maxPreRollFrames) this.preRoll.shift();
     } else this.frames.push(frame);
 
     const event = this.detector.pushLevel(rms, now, { playbackActive: this.playbackActive });
     if (event?.type === 'start') {
       this.frames = this.preRoll.splice(0);
-      this.frames.push(frame);
       this.callbacks.onSpeechStart?.(event);
     } else if (event?.type === 'end') {
       const frames = this.frames.splice(0);
       this.armed = false;
       try {
-        const wav = encodePcm16Wav(flatten(frames), this.sampleRate, 16000);
-        this.callbacks.onSpeechEnd?.(new Blob([wav], { type: 'audio/wav' }), { ...event, sourceSampleRate: this.sampleRate, sampleRate: 16000 });
+        const samples = flatten(frames);
+        const analysis = analyzeSamples(samples, this.sampleRate);
+        const wav = encodePcm16Wav(samples, this.sampleRate, 16000);
+        const trackSettings = this.#liveTrack()?.getSettings?.() || {};
+        this.callbacks.onSpeechEnd?.(new Blob([wav], { type: 'audio/wav' }), {
+          ...event,
+          ...analysis,
+          sourceSampleRate: this.sampleRate,
+          sampleRate: 16000,
+          captureMode: this.captureMode,
+          deviceSampleRate: Number(trackSettings.sampleRate) || null,
+          echoCancellation: trackSettings.echoCancellation === true,
+          noiseSuppression: trackSettings.noiseSuppression === true,
+          autoGainControl: trackSettings.autoGainControl === true
+        });
       } catch (error) { this.callbacks.onError?.(error); }
     }
   }
@@ -242,6 +272,26 @@ export function resampleLinear(samples, sourceRate, targetRate) {
   const length = Math.max(1, Math.round(samples.length * targetRate / sourceRate));
   const output = new Float32Array(length);
   const ratio = sourceRate / targetRate;
+  if (ratio > 1) {
+    // Area-weighted box filtering prevents the high-frequency aliases produced
+    // by plain point interpolation when browser audio (usually 48 kHz) is
+    // reduced to the 16 kHz expected by Whisper.
+    for (let index = 0; index < length; index += 1) {
+      const start = index * ratio;
+      const end = Math.min(samples.length, (index + 1) * ratio);
+      const first = Math.floor(start);
+      const last = Math.min(samples.length - 1, Math.ceil(end) - 1);
+      let weighted = 0;
+      let weightTotal = 0;
+      for (let sourceIndex = first; sourceIndex <= last; sourceIndex += 1) {
+        const weight = Math.max(0, Math.min(end, sourceIndex + 1) - Math.max(start, sourceIndex));
+        weighted += samples[sourceIndex] * weight;
+        weightTotal += weight;
+      }
+      output[index] = weightTotal ? weighted / weightTotal : samples[Math.min(samples.length - 1, first)];
+    }
+    return output;
+  }
   for (let index = 0; index < length; index += 1) {
     const position = index * ratio;
     const left = Math.floor(position);
@@ -268,6 +318,24 @@ function voiceError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function analyzeSamples(samples, sampleRate) {
+  let sum = 0;
+  let peak = 0;
+  let clipped = 0;
+  for (const sample of samples) {
+    const absolute = Math.abs(sample);
+    sum += sample * sample;
+    peak = Math.max(peak, absolute);
+    if (absolute >= 0.985) clipped += 1;
+  }
+  return {
+    durationMs: Math.round(samples.length * 1000 / Math.max(1, sampleRate)),
+    rms: Number(Math.sqrt(sum / Math.max(1, samples.length)).toFixed(4)),
+    peak: Number(peak.toFixed(4)),
+    clippingRatio: Number((clipped / Math.max(1, samples.length)).toFixed(5))
+  };
 }
 
 function microphoneError(error) {

@@ -36,7 +36,7 @@ export function verifyTaskOutcome({ contract, response = {}, evidence = [], usag
     const verification = evidence.find(item => isProjectVerificationTool(item?.tool) && item?.ok === true);
     checks.push(check(
       'mutation-executed',
-      'Alteração real executada',
+      'Resultado solicitado confirmado no projeto',
       Boolean(mutation),
       mutation?.summary || (mutationFailures.length
         ? `${mutationFailures.length} tentativa(s) de alteração não foram confirmadas.`

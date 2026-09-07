@@ -37,7 +37,7 @@ export class VoiceConversationController {
   async startConversation() {
     this.conversationEnabled = true;
     this.settings.conversationMode = true;
-    if ([VOICE_STATES.THINKING, VOICE_STATES.SPEAKING, VOICE_STATES.TRANSCRIBING].includes(this.machine.current)) return;
+    if ([VOICE_STATES.THINKING, VOICE_STATES.PREPARING, VOICE_STATES.SPEAKING, VOICE_STATES.TRANSCRIBING].includes(this.machine.current)) return;
     await this.listen({ once: false });
   }
 
@@ -54,6 +54,7 @@ export class VoiceConversationController {
       this.machine.reset({ reason: 'push-to-talk-stop' });
       return;
     }
+    this.manualSpeech = false;
     this.#cancelPlayback('push-to-talk');
     this.#armPushToTalkWindow({ testOnly: false });
     await this.listen({ once: true });
@@ -68,6 +69,7 @@ export class VoiceConversationController {
       this.callbacks.onStatus?.('idle');
       return false;
     }
+    this.manualSpeech = false;
     this.#cancelPlayback('microphone-test');
     this.microphoneTestActive = true;
     this.#armPushToTalkWindow({ testOnly: true });
@@ -122,6 +124,7 @@ export class VoiceConversationController {
     if ([VOICE_STATES.LISTENING, VOICE_STATES.SPEECH_DETECTED].includes(this.machine.current)) this.stopInput();
     // A new response is a hard turn boundary: no prepared or queued audio from
     // the previous answer may be allowed to cross it.
+    this.manualSpeech = false;
     this.#cancelPlayback('new-chat-turn');
     this.chatFinished = false;
     this.chatBuffer = '';
@@ -266,10 +269,22 @@ export class VoiceConversationController {
       this.stopInput();
       this.#cancelPushToTalkRetry();
       this.machine.reset({ reason: 'microphone-test-complete' });
-      this.callbacks.onStatus?.('microphone-ok', { transcript, engine: detail.engine });
+      this.callbacks.onStatus?.('microphone-ok', { ...detail, transcript, engine: detail.engine });
       return;
     }
     this.callbacks.onInterim?.(transcript, { final: true });
+    const confidence = optionalNumber(detail?.confidence);
+    const noSpeechProbability = optionalNumber(detail?.noSpeechProbability);
+    const rms = optionalNumber(detail?.rms);
+    const lowConfidence = (Number.isFinite(confidence) && confidence < 0.48)
+      || (Number.isFinite(noSpeechProbability) && noSpeechProbability > 0.5)
+      || (Number.isFinite(rms) && rms < 0.005);
+    if (lowConfidence) {
+      this.#cancelPushToTalkRetry();
+      this.machine.reset({ reason: 'transcript-needs-review' });
+      this.callbacks.onStatus?.('transcript-review', { transcript, confidence, noSpeechProbability });
+      return;
+    }
     if (!this.settings.autoSend) {
       this.machine.reset({ reason: 'transcript-ready' });
       return;
@@ -386,21 +401,37 @@ export class VoiceConversationController {
     Object.assign(this.playback.callbacks, {
       ...this.playback.callbacks,
       onPrepare: detail => {
-        this.#transition(VOICE_STATES.SPEAKING, { engine: detail.engine, preparing: true });
-        this.callbacks.onStatus?.('tts-preparing', detail);
+        this.mark('voice.tts_prepare_start', { engine: detail.engine });
+        // A streamed sentence may be prepared while the previous sentence is
+        // already audible. Keep SPEAKING authoritative in that case: changing
+        // the visible state to PREPARING would both lie to the user and violate
+        // the state-machine transition contract.
+        if (this.machine.current !== VOICE_STATES.SPEAKING) {
+          this.#transition(VOICE_STATES.PREPARING, { engine: detail.engine });
+          this.callbacks.onStatus?.('tts-preparing', detail);
+        }
       },
       onRetry: detail => {
         this.mark('voice.tts_retry', { engine: detail.engine, attempt: detail.attempt, delayMs: detail.delayMs });
         this.callbacks.onStatus?.('tts-waiting', detail);
       },
       onStart: detail => {
+        this.callbacks.onStatus?.('tts-ready', detail);
+      },
+      onFirstAudio: detail => {
         this.mark('voice.tts_start', { engine: detail.engine });
+        this.mark('voice.first_audio', detail);
         this.#transition(VOICE_STATES.SPEAKING, { engine: detail.engine });
         this.callbacks.onStatus?.('speaking', detail);
         if (!this.manualSpeech) this.#armBargeMonitor();
       },
-      onFirstAudio: detail => this.mark('voice.first_audio', detail),
-      onEnd: detail => this.mark('voice.tts_end', detail),
+      onEnd: detail => {
+        this.mark('voice.tts_end', detail);
+        if (this.playback.queue.length) {
+          this.#transition(VOICE_STATES.PREPARING, { engine: detail.engine, betweenChunks: true });
+          this.callbacks.onStatus?.('tts-preparing', { ...detail, betweenChunks: true });
+        }
+      },
       onIdle: detail => {
         if (this.suppressPlaybackIdle) return;
         if (detail.cancelled && [VOICE_STATES.INTERRUPTING, VOICE_STATES.SPEECH_DETECTED, VOICE_STATES.TRANSCRIBING].includes(this.machine.current)) return;
@@ -468,6 +499,10 @@ function withId(engine, id) {
 
 function performanceNow() {
   return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function optionalNumber(value) {
+  return value == null || value === '' ? Number.NaN : Number(value);
 }
 
 function voiceError(code, message) {
