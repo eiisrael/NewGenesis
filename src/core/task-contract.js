@@ -103,10 +103,10 @@ function toolPolicyFor(kind, text, complexity = 'low') {
         allowed: ['write_project_file'],
         maxBatches: 0,
         maxExplorationBatches: 0,
-        maxMutationAttempts: 2,
+        maxMutationAttempts: complexity === 'high' ? 2 : 1,
         maxCallsPerBatch: 1,
         maxResultCharacters: 12_000,
-        maxTaskResultCharacters: 24_000,
+        maxTaskResultCharacters: complexity === 'high' ? 36_000 : 24_000,
         searchFirst: false,
         preferTargetedReplacement: false,
         verificationMode: 'write_confirmation'
@@ -199,10 +199,12 @@ function requestPolicy(kind, complexity, mutationIntent = 'edit') {
   if (kind === 'project_overview') return { limit: 0, inputTokenLimit: 0, maxRequestInputTokens: 0, reserveFinal: 0, deadlineMs: 0 };
   if (['change', 'fix'].includes(kind)) {
     if (mutationIntent === 'create_directory') {
-      return { limit: 2, inputTokenLimit: 12_000, maxRequestInputTokens: 6_000, reserveFinal: 0, deadlineMs: 30_000 };
+      return { limit: 1, inputTokenLimit: 8_000, maxRequestInputTokens: 4_000, reserveFinal: 0, deadlineMs: 20_000 };
     }
-    if (mutationIntent === 'create_file' && complexity !== 'high') {
-      return { limit: 3, inputTokenLimit: 36_000, maxRequestInputTokens: 10_000, reserveFinal: 1, deadlineMs: 60_000 };
+    if (mutationIntent === 'create_file') {
+      return complexity === 'high'
+        ? { limit: 2, inputTokenLimit: 48_000, maxRequestInputTokens: 16_000, reserveFinal: 0, deadlineMs: 90_000 }
+        : { limit: 1, inputTokenLimit: 16_000, maxRequestInputTokens: 12_000, reserveFinal: 0, deadlineMs: 45_000 };
     }
 
     // Edições comuns precisam ser econômicas: busca -> contexto mínimo -> escrita ->
