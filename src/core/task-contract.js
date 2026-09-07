@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import {
   PROJECT_READ_TOOL_NAMES,
   PROJECT_MUTATION_TOOL_NAMES,
-  PROJECT_VERIFICATION_TOOL_NAMES
+  PROJECT_VERIFICATION_TOOL_NAMES,
+  projectMutationIntent
 } from './project-tool-policy.js';
 
 const normalize = value => String(value || '')
@@ -91,6 +92,43 @@ function toolPolicyFor(kind, text, complexity = 'low') {
     };
   }
   if (['change', 'fix'].includes(kind)) {
+    const mutationIntent = projectMutationIntent(text);
+
+    // Criações explícitas não precisam pesquisar um conteúdo que ainda não existe.
+    // Expor uma única ferramenta também torna a execução determinística e econômica.
+    if (mutationIntent === 'create_file') {
+      return {
+        strategy: 'direct_mutation',
+        mutationIntent,
+        allowed: ['write_project_file'],
+        maxBatches: 0,
+        maxExplorationBatches: 0,
+        maxMutationAttempts: 2,
+        maxCallsPerBatch: 1,
+        maxResultCharacters: 12_000,
+        maxTaskResultCharacters: 24_000,
+        searchFirst: false,
+        preferTargetedReplacement: false,
+        verificationMode: 'write_confirmation'
+      };
+    }
+    if (mutationIntent === 'create_directory') {
+      return {
+        strategy: 'direct_mutation',
+        mutationIntent,
+        allowed: ['create_project_directory'],
+        maxBatches: 0,
+        maxExplorationBatches: 0,
+        maxMutationAttempts: 1,
+        maxCallsPerBatch: 1,
+        maxResultCharacters: 4_000,
+        maxTaskResultCharacters: 8_000,
+        searchFirst: false,
+        preferTargetedReplacement: false,
+        verificationMode: 'write_confirmation'
+      };
+    }
+
     const allowed = [
       ...PROJECT_READ_TOOL_NAMES,
       ...PROJECT_MUTATION_TOOL_NAMES.filter(name => name !== 'delete_project_path'),
@@ -102,6 +140,7 @@ function toolPolicyFor(kind, text, complexity = 'low') {
       // Nome preservado por compatibilidade com integrações antigas; o comportamento
       // agora é agentic, sequencial, search-first e com escrita obrigatória.
       strategy: 'bounded_agent',
+      mutationIntent,
       allowed,
       maxBatches: explorationBatches,
       maxExplorationBatches: explorationBatches,
@@ -134,7 +173,17 @@ function successCriteria(kind, format, project) {
   return criteria;
 }
 
-function stepsFor(kind) {
+function stepsFor(kind, mutationIntent = 'edit') {
+  if (kind === 'change' && mutationIntent === 'create_file') {
+    return ['Gerar o conteúdo necessário', 'Gravar o arquivo solicitado', 'Confirmar a gravação'].map((label, index) => ({
+      id: `step-${index + 1}`, label, status: index === 0 ? 'in_progress' : 'pending'
+    }));
+  }
+  if (kind === 'change' && mutationIntent === 'create_directory') {
+    return ['Criar a pasta solicitada', 'Confirmar a criação'].map((label, index) => ({
+      id: `step-${index + 1}`, label, status: index === 0 ? 'in_progress' : 'pending'
+    }));
+  }
   const steps = {
     project_overview: ['Inventariar o projeto localmente', 'Identificar arquitetura e pontos de entrada', 'Gerar relatório verificável'],
     diagnose: ['Localizar evidências', 'Determinar causa provável', 'Relatar diagnóstico e validação'],
@@ -146,9 +195,16 @@ function stepsFor(kind) {
   return steps.map((label, index) => ({ id: `step-${index + 1}`, label, status: index === 0 ? 'in_progress' : 'pending' }));
 }
 
-function requestPolicy(kind, complexity) {
+function requestPolicy(kind, complexity, mutationIntent = 'edit') {
   if (kind === 'project_overview') return { limit: 0, inputTokenLimit: 0, maxRequestInputTokens: 0, reserveFinal: 0, deadlineMs: 0 };
   if (['change', 'fix'].includes(kind)) {
+    if (mutationIntent === 'create_directory') {
+      return { limit: 2, inputTokenLimit: 12_000, maxRequestInputTokens: 6_000, reserveFinal: 0, deadlineMs: 30_000 };
+    }
+    if (mutationIntent === 'create_file' && complexity !== 'high') {
+      return { limit: 3, inputTokenLimit: 36_000, maxRequestInputTokens: 10_000, reserveFinal: 1, deadlineMs: 60_000 };
+    }
+
     // Edições comuns precisam ser econômicas: busca -> contexto mínimo -> escrita ->
     // verificação -> síntese. Só tarefas realmente amplas ganham orçamento de 14.
     const limit = complexity === 'high' ? 14 : 6;
@@ -172,10 +228,11 @@ export function createTaskContract(query, options = {}) {
   const format = outputFormat(text);
   const complexity = complexityFor(kind, query, project);
   const toolPolicy = toolPolicyFor(kind, text, complexity);
+  const mutationIntent = toolPolicy.mutationIntent || 'edit';
 
   return {
     id: crypto.randomUUID(),
-    version: 2,
+    version: 3,
     createdAt: new Date().toISOString(),
     objective: String(query || '').trim(),
     kind,
@@ -183,10 +240,10 @@ export function createTaskContract(query, options = {}) {
     readOnly: !['change', 'fix'].includes(kind),
     outputFormat: format,
     project: project ? { id: project.id, name: project.name, fileCount: project.fileCount, writable: project.writable } : null,
-    requestBudget: requestPolicy(kind, complexity),
+    requestBudget: requestPolicy(kind, complexity, mutationIntent),
     toolPolicy,
     successCriteria: successCriteria(kind, format, project),
-    steps: stepsFor(kind)
+    steps: stepsFor(kind, mutationIntent)
   };
 }
 
