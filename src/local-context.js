@@ -3,8 +3,20 @@ const OPEN_METEO_GEOCODING_ORIGIN = 'https://geocoding-api.open-meteo.com';
 const OPEN_METEO_CURRENT = [
   'temperature_2m', 'relative_humidity_2m', 'apparent_temperature',
   'precipitation', 'rain', 'showers', 'weather_code', 'cloud_cover',
-  'wind_speed_10m', 'wind_direction_10m'
+  'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m',
+  'pressure_msl', 'surface_pressure', 'is_day'
 ];
+const OPEN_METEO_DAILY = [
+  'temperature_2m_max', 'temperature_2m_min', 'precipitation_probability_max',
+  'sunrise', 'sunset'
+];
+
+const BRAZIL_STATES = Object.freeze({
+  AC: 'Acre', AL: 'Alagoas', AP: 'Amapá', AM: 'Amazonas', BA: 'Bahia', CE: 'Ceará', DF: 'Distrito Federal',
+  ES: 'Espírito Santo', GO: 'Goiás', MA: 'Maranhão', MT: 'Mato Grosso', MS: 'Mato Grosso do Sul', MG: 'Minas Gerais',
+  PA: 'Pará', PB: 'Paraíba', PR: 'Paraná', PE: 'Pernambuco', PI: 'Piauí', RJ: 'Rio de Janeiro', RN: 'Rio Grande do Norte',
+  RS: 'Rio Grande do Sul', RO: 'Rondônia', RR: 'Roraima', SC: 'Santa Catarina', SP: 'São Paulo', SE: 'Sergipe', TO: 'Tocantins'
+});
 
 const WEATHER_CODES = Object.freeze({
   0: 'céu limpo', 1: 'predominantemente limpo', 2: 'parcialmente nublado', 3: 'nublado',
@@ -26,6 +38,7 @@ export const LOCAL_CONTEXT_CAPABILITIES = Object.freeze({
     source: 'Open-Meteo',
     network: true,
     endpoint: OPEN_METEO_ORIGIN,
+    freshness: '15-minute model data when available',
     attributionUrl: 'https://open-meteo.com/',
     license: 'CC BY 4.0'
   }
@@ -64,12 +77,26 @@ export function classifyLocalContextIntent(value) {
   const text = fold(value);
   const location = /\b(onde (?:eu )?estou|qual (?:e )?a minha localizacao|qual (?:e )?a minha cidade|minha localizacao agora|where am i|my location)\b/.test(text);
   if (location) return 'location';
-  const weather = /\b(clima|previsao do tempo|tempo (?:agora|hoje|amanha)|temperatura|vai chover|esta chovendo|weather|forecast)\b/.test(text);
+  const weather = /\b(clima|previsao do tempo|tempo (?:agora|hoje|amanha)|temperatura|sensacao termica|umidade|vento|vai chover|esta chovendo|weather|forecast)\b/.test(text);
   if (weather) return 'weather';
   const date = /\b(que dia|qual (?:e )?a data|data de hoje|dia da semana|what(?:'s| is) the date|today(?:'s)? date)\b/.test(text);
   const time = /\b(que horas|qual (?:e )?a hora|hora agora|horario agora|what time|current time)\b/.test(text);
   if (date || time) return 'date-time';
   return null;
+}
+
+export function normalizePlaceQuery(value) {
+  let query = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+  query = query.replace(/\s*[-–—]\s*([a-z]{2})$/i, ', $1');
+  const match = query.match(/^(.*?),\s*([a-z]{2})$/i);
+  if (match && BRAZIL_STATES[match[2].toUpperCase()]) {
+    query = `${match[1].trim()}, ${match[2].toUpperCase()}`;
+  }
+  return query;
 }
 
 export function extractRequestedPlace(value) {
@@ -79,6 +106,7 @@ export function extractRequestedPlace(value) {
   let candidate = explicit?.[1] || matches.at(-1)?.[1] || '';
   candidate = candidate.split(/\b(?:em|para)\s+/iu).at(-1).trim();
   candidate = candidate.replace(/\b(?:agora|hoje|amanh[aã]|neste momento)\b.*$/iu, '').replace(/^[,;:\s-]+|[,;:\s-]+$/g, '');
+  candidate = normalizePlaceQuery(candidate);
   if (!candidate || candidate.length > 100 || /^(?:aqui|minha cidade|hoje|agora|casa)$/iu.test(candidate)) return null;
   return candidate;
 }
@@ -86,12 +114,17 @@ export function extractRequestedPlace(value) {
 export function dateTimeSnapshot({ now = new Date(), timeZone, locale = 'pt-BR' } = {}) {
   const safeZone = validTimeZone(timeZone) ? timeZone : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const safeLocale = locale === 'en-US' ? 'en-US' : 'pt-BR';
+  const timeFormatter = new Intl.DateTimeFormat(safeLocale, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: safeZone, timeZoneName: 'short'
+  });
+  const parts = timeFormatter.formatToParts(now);
   return {
     source: 'system-clock',
     instant: new Date(now).toISOString(),
     timeZone: safeZone,
+    timeZoneName: parts.find(part => part.type === 'timeZoneName')?.value || safeZone,
     date: new Intl.DateTimeFormat(safeLocale, { dateStyle: 'full', timeZone: safeZone }).format(now),
-    time: new Intl.DateTimeFormat(safeLocale, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: safeZone }).format(now)
+    time: parts.filter(part => part.type !== 'timeZoneName').map(part => part.value).join('').trim()
   };
 }
 
@@ -99,7 +132,7 @@ export async function resolveLocalContextResponse({ query, clientContext, langua
   const intent = classifyLocalContextIntent(query);
   if (!intent) return null;
   const context = sanitizeClientContext(clientContext);
-  const requestedPlace = extractRequestedPlace(query) || (typeof fallbackPlace === 'string' ? fallbackPlace.slice(0, 100) : null);
+  const requestedPlace = extractRequestedPlace(query) || (typeof fallbackPlace === 'string' ? normalizePlaceQuery(fallbackPlace) : null);
   if (intent === 'location') {
     if (!requestedPlace) {
       return {
@@ -133,8 +166,8 @@ export async function resolveLocalContextResponse({ query, clientContext, langua
     }
     const snapshot = dateTimeSnapshot({ now, timeZone: place?.timeZone || context.timeZone, locale: language });
     const content = language === 'en-US'
-      ? `Today is ${snapshot.date}. The current time is ${snapshot.time}${place ? ` in ${place.label}` : ', according to your device clock'}.`
-      : `Hoje é ${snapshot.date}. Agora são ${snapshot.time}${place ? ` em ${place.label}` : ', conforme o relógio do seu dispositivo'}.`;
+      ? `Today is ${snapshot.date}. The current time is ${snapshot.time} (${snapshot.timeZoneName})${place ? ` in ${place.label}` : ', according to your device clock'}.`
+      : `Hoje é ${snapshot.date}. Agora são ${snapshot.time} (${snapshot.timeZoneName})${place ? ` em ${place.label}` : ', conforme o relógio do seu dispositivo'}.`;
     return { content, model: 'system-clock', snapshot: { ...snapshot, ...(place ? { place: publicPlace(place) } : {}) } };
   }
   if (!requestedPlace) {
@@ -149,8 +182,8 @@ export async function resolveLocalContextResponse({ query, clientContext, langua
   } catch {
     return {
       content: language === 'en-US'
-        ? 'I could not retrieve current weather from Open-Meteo. I will not invent local conditions; please try again in a moment.'
-        : 'Não consegui consultar o clima atual no Open-Meteo. Não vou inventar as condições locais; tente novamente em instantes.',
+        ? `I could not retrieve live weather for ${requestedPlace}. I will not invent conditions; please try again in a moment.`
+        : `Não consegui obter uma leitura ao vivo do clima para ${requestedPlace}. Não vou inventar as condições; tente novamente em instantes.`,
       model: 'weather-unavailable'
     };
   }
@@ -160,36 +193,63 @@ export async function resolveLocalContextResponse({ query, clientContext, langua
   }).format(new Date(snapshot.observedAt));
   const description = describeWeatherCode(current.weatherCode, language);
   const placeLabel = snapshot.location?.label ? ` em ${snapshot.location.label}` : '';
+  const today = snapshot.today || {};
+  const gustText = Number.isFinite(Number(current.windGusts))
+    ? (language === 'en-US' ? `, gusts ${formatNumber(current.windGusts, language)} km/h` : `, rajadas de ${formatNumber(current.windGusts, language)} km/h`)
+    : '';
+  const rangeText = Number.isFinite(Number(today.temperatureMin)) && Number.isFinite(Number(today.temperatureMax))
+    ? (language === 'en-US'
+      ? ` Today's range is ${formatNumber(today.temperatureMin, language)}–${formatNumber(today.temperatureMax, language)} °C${Number.isFinite(Number(today.precipitationProbabilityMax)) ? `, with up to ${formatNumber(today.precipitationProbabilityMax, language)}% precipitation probability` : ''}.`
+      : ` Hoje a temperatura varia de ${formatNumber(today.temperatureMin, language)} a ${formatNumber(today.temperatureMax, language)} °C${Number.isFinite(Number(today.precipitationProbabilityMax)) ? `, com até ${formatNumber(today.precipitationProbabilityMax, language)}% de chance de precipitação` : ''}.`)
+    : '';
+  const staleText = snapshot.stale
+    ? (language === 'en-US'
+      ? ` Live refresh failed; this is the last valid reading from about ${Math.max(1, Math.round(snapshot.staleAgeMs / 60000))} minutes ago.`
+      : ` A atualização ao vivo falhou; esta é a última leitura válida, de cerca de ${Math.max(1, Math.round(snapshot.staleAgeMs / 60000))} min atrás.`)
+    : '';
   const content = language === 'en-US'
-    ? `Current weather${placeLabel}: ${description}, ${formatNumber(current.temperature, language)} °C (feels like ${formatNumber(current.apparentTemperature, language)} °C), humidity ${formatNumber(current.humidity, language)}%, wind ${formatNumber(current.windSpeed, language)} km/h, and precipitation ${formatNumber(current.precipitation, language)} mm. Updated ${observed}. Source: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).`
-    : `Clima atual${placeLabel}: ${description}, ${formatNumber(current.temperature, language)} °C (sensação de ${formatNumber(current.apparentTemperature, language)} °C), umidade de ${formatNumber(current.humidity, language)}%, vento de ${formatNumber(current.windSpeed, language)} km/h e precipitação de ${formatNumber(current.precipitation, language)} mm. Atualizado em ${observed}. Fonte: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).`;
-  return { content, model: 'open-meteo-current', snapshot };
+    ? `Current weather${placeLabel}: ${description}, ${formatNumber(current.temperature, language)} °C (feels like ${formatNumber(current.apparentTemperature, language)} °C), humidity ${formatNumber(current.humidity, language)}%, wind ${formatNumber(current.windSpeed, language)} km/h${gustText}, and precipitation ${formatNumber(current.precipitation, language)} mm.${rangeText} Updated ${observed}.${staleText} Source: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).`
+    : `Clima agora${placeLabel}: ${description}, ${formatNumber(current.temperature, language)} °C (sensação de ${formatNumber(current.apparentTemperature, language)} °C), umidade de ${formatNumber(current.humidity, language)}%, vento de ${formatNumber(current.windSpeed, language)} km/h${gustText} e precipitação de ${formatNumber(current.precipitation, language)} mm.${rangeText} Atualizado em ${observed}.${staleText} Fonte: [Open-Meteo](https://open-meteo.com/) (CC BY 4.0).`;
+  return { content, model: snapshot.stale ? 'open-meteo-stale' : 'open-meteo-current', snapshot };
 }
 
 export class WeatherService {
-  constructor({ fetchImpl = globalThis.fetch, now = () => Date.now(), timeoutMs = 8_000, cacheTtlMs = 5 * 60_000 } = {}) {
+  constructor({
+    fetchImpl = globalThis.fetch,
+    now = () => Date.now(),
+    timeoutMs = 8_000,
+    cacheTtlMs = 5 * 60_000,
+    staleTtlMs = 60 * 60_000,
+    retryCount = 1,
+    retryDelayMs = 120
+  } = {}) {
     this.fetchImpl = fetchImpl;
     this.now = now;
     this.timeoutMs = timeoutMs;
     this.cacheTtlMs = cacheTtlMs;
+    this.staleTtlMs = Math.max(cacheTtlMs, staleTtlMs);
+    this.retryCount = Math.max(0, Math.min(2, Number(retryCount || 0)));
+    this.retryDelayMs = Math.max(0, Math.min(1000, Number(retryDelayMs || 0)));
     this.cache = new Map();
     this.placeCache = new Map();
   }
 
   async resolvePlace(value) {
-    const query = String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+    const query = normalizePlaceQuery(value);
     if (query.length < 2) throw contextError(400, 'invalid_place', 'Informe uma cidade válida.');
     const key = fold(query);
     const cached = this.placeCache.get(key);
     if (cached && this.now() - cached.cachedAt < 24 * 60 * 60_000) return structuredClone(cached.value);
-    const url = new URL('/v1/search', OPEN_METEO_GEOCODING_ORIGIN);
-    url.searchParams.set('name', query);
-    url.searchParams.set('count', '5');
-    url.searchParams.set('language', 'pt');
-    url.searchParams.set('format', 'json');
-    const payload = await this.#requestJson(url);
-    const result = payload?.results?.find(item => Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude)) && item.timezone);
+
+    let results = await this.#searchPlace(query);
+    const hints = brazilPlaceHints(query);
+    let result = selectPlaceResult(results, query, hints);
+    if (!result && hints?.city) {
+      results = await this.#searchPlace(hints.city, 'BR');
+      result = selectPlaceResult(results, hints.city, hints);
+    }
     if (!result) throw contextError(404, 'place_not_found', `Não encontrei o local “${query}”. Informe cidade e estado ou país.`);
+
     const parts = [result.name, result.admin1, result.country].map(item => String(item || '').trim()).filter((item, index, all) => item && all.indexOf(item) === index);
     const place = {
       name: String(result.name).slice(0, 100),
@@ -204,6 +264,17 @@ export class WeatherService {
     this.placeCache.set(key, { cachedAt: this.now(), value: place });
     if (this.placeCache.size > 32) this.placeCache.delete(this.placeCache.keys().next().value);
     return structuredClone(place);
+  }
+
+  async #searchPlace(query, countryCode = '') {
+    const url = new URL('/v1/search', OPEN_METEO_GEOCODING_ORIGIN);
+    url.searchParams.set('name', query);
+    url.searchParams.set('count', '8');
+    url.searchParams.set('language', 'pt');
+    url.searchParams.set('format', 'json');
+    if (countryCode) url.searchParams.set('countryCode', countryCode);
+    const payload = await this.#requestJson(url);
+    return Array.isArray(payload?.results) ? payload.results : [];
   }
 
   async currentForPlace(value) {
@@ -221,42 +292,63 @@ export class WeatherService {
     const longitude = roundCoordinate(rawLongitude);
     const key = `${latitude},${longitude}`;
     const cached = this.cache.get(key);
-    if (cached && this.now() - cached.cachedAt < this.cacheTtlMs) return structuredClone(cached.value);
+    const age = cached ? this.now() - cached.cachedAt : Infinity;
+    if (cached && age < this.cacheTtlMs) return structuredClone(cached.value);
 
     const url = new URL('/v1/forecast', OPEN_METEO_ORIGIN);
     url.searchParams.set('latitude', String(latitude));
     url.searchParams.set('longitude', String(longitude));
     url.searchParams.set('current', OPEN_METEO_CURRENT.join(','));
+    url.searchParams.set('daily', OPEN_METEO_DAILY.join(','));
     url.searchParams.set('timezone', 'auto');
-    url.searchParams.set('forecast_days', '1');
-    const payload = await this.#requestJson(url);
-    const value = normalizeWeather(payload);
-    this.cache.set(key, { cachedAt: this.now(), value });
-    if (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value);
-    return structuredClone(value);
+    url.searchParams.set('forecast_days', '2');
+    try {
+      const payload = await this.#requestJson(url);
+      const value = normalizeWeather(payload);
+      this.cache.set(key, { cachedAt: this.now(), value });
+      if (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value);
+      return structuredClone(value);
+    } catch (error) {
+      if (cached && age < this.staleTtlMs) {
+        return { ...structuredClone(cached.value), stale: true, staleAgeMs: age };
+      }
+      throw error;
+    }
   }
 
   async #requestJson(url) {
     const allowed = (url.origin === OPEN_METEO_ORIGIN && url.pathname === '/v1/forecast')
       || (url.origin === OPEN_METEO_GEOCODING_ORIGIN && url.pathname === '/v1/search');
     if (!allowed) throw contextError(500, 'weather_url_blocked', 'A URL do provedor não está autorizada.');
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response;
-    try {
-      response = await this.fetchImpl(url, {
-        method: 'GET', headers: { accept: 'application/json', 'user-agent': 'NewGenesis/2.3.1 local-weather' },
-        redirect: 'error', signal: controller.signal
-      });
-    } catch (error) {
-      if (error?.name === 'AbortError') throw contextError(504, 'weather_timeout', 'O provedor de clima excedeu o tempo limite.');
-      throw contextError(502, 'weather_unavailable', 'Não foi possível consultar o serviço de localização e clima agora.');
-    } finally { clearTimeout(timer); }
-    if (!response?.ok) throw contextError(502, 'weather_provider_error', `O provedor respondeu com status ${response?.status || 'inválido'}.`);
-    const raw = await response.text();
-    if (raw.length > 128 * 1024) throw contextError(502, 'weather_response_too_large', 'A resposta do provedor excedeu o limite seguro.');
-    try { return JSON.parse(raw); }
-    catch { throw contextError(502, 'weather_invalid_response', 'O provedor retornou JSON inválido.'); }
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= this.retryCount; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await this.fetchImpl(url, {
+          method: 'GET', headers: { accept: 'application/json', 'user-agent': 'NewGenesis/2.4 local-weather' },
+          redirect: 'error', signal: controller.signal
+        });
+        if (!response?.ok) {
+          const error = contextError(502, 'weather_provider_error', `O provedor respondeu com status ${response?.status || 'inválido'}.`);
+          error.transient = response?.status === 429 || Number(response?.status || 0) >= 500;
+          throw error;
+        }
+        const raw = await response.text();
+        if (raw.length > 128 * 1024) throw contextError(502, 'weather_response_too_large', 'A resposta do provedor excedeu o limite seguro.');
+        try { return JSON.parse(raw); }
+        catch { throw contextError(502, 'weather_invalid_response', 'O provedor retornou JSON inválido.'); }
+      } catch (error) {
+        if (error?.name === 'AbortError') lastError = contextError(504, 'weather_timeout', 'O provedor de clima excedeu o tempo limite.');
+        else if (error?.code) lastError = error;
+        else lastError = contextError(502, 'weather_unavailable', 'Não foi possível consultar o serviço de localização e clima agora.');
+        const retryable = error?.name === 'AbortError' || error?.transient === true || !error?.code;
+        if (!retryable || attempt >= this.retryCount) throw lastError;
+      } finally { clearTimeout(timer); }
+      if (this.retryDelayMs) await delay(this.retryDelayMs);
+    }
+    throw lastError || contextError(502, 'weather_unavailable', 'Não foi possível consultar o clima agora.');
   }
 }
 
@@ -291,10 +383,45 @@ function normalizeWeather(payload) {
       cloudCover: finite(current.cloud_cover),
       weatherCode: finite(current.weather_code),
       windSpeed: finite(current.wind_speed_10m),
-      windDirection: finite(current.wind_direction_10m)
+      windDirection: finite(current.wind_direction_10m),
+      windGusts: finite(current.wind_gusts_10m),
+      pressureMsl: finite(current.pressure_msl),
+      surfacePressure: finite(current.surface_pressure),
+      isDay: finite(current.is_day)
     },
-    units: { temperature: '°C', humidity: '%', precipitation: 'mm', windSpeed: 'km/h' }
+    today: {
+      temperatureMax: finite(payload?.daily?.temperature_2m_max?.[0]),
+      temperatureMin: finite(payload?.daily?.temperature_2m_min?.[0]),
+      precipitationProbabilityMax: finite(payload?.daily?.precipitation_probability_max?.[0]),
+      sunrise: String(payload?.daily?.sunrise?.[0] || ''),
+      sunset: String(payload?.daily?.sunset?.[0] || '')
+    },
+    units: { temperature: '°C', humidity: '%', precipitation: 'mm', windSpeed: 'km/h', pressure: 'hPa' }
   };
+}
+
+function brazilPlaceHints(query) {
+  const match = String(query || '').match(/^(.*?),\s*([A-Z]{2})$/);
+  if (!match || !BRAZIL_STATES[match[2]]) return null;
+  return { city: match[1].trim(), stateCode: match[2], admin1: BRAZIL_STATES[match[2]], countryCode: 'BR' };
+}
+
+function selectPlaceResult(results, query, hints) {
+  const valid = (results || []).filter(item => Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude)) && validTimeZone(item.timezone));
+  if (!valid.length) return null;
+  const wantedName = fold(hints?.city || String(query || '').split(',')[0]);
+  return [...valid].sort((left, right) => placeScore(right, wantedName, hints) - placeScore(left, wantedName, hints))[0];
+}
+
+function placeScore(item, wantedName, hints) {
+  let score = 0;
+  if (fold(item?.name) === wantedName) score += 20;
+  else if (fold(item?.name).includes(wantedName) || wantedName.includes(fold(item?.name))) score += 8;
+  if (hints?.countryCode && String(item?.country_code || '').toUpperCase() === hints.countryCode) score += 14;
+  if (hints?.admin1 && fold(item?.admin1) === fold(hints.admin1)) score += 24;
+  if (String(item?.feature_code || '').startsWith('PPL')) score += 2;
+  if (Number.isFinite(Number(item?.population))) score += Math.min(5, Math.log10(Math.max(1, Number(item.population))));
+  return score;
 }
 
 function validTimeZone(value) {
@@ -341,6 +468,10 @@ function fold(value) {
 function formatNumber(value, locale) {
   if (!Number.isFinite(Number(value))) return locale === 'en-US' ? 'unavailable' : 'indisponível';
   return new Intl.NumberFormat(locale === 'en-US' ? 'en-US' : 'pt-BR', { maximumFractionDigits: 1 }).format(value);
+}
+
+function delay(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
 function contextError(status, code, message) {
