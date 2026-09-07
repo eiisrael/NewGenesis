@@ -16,6 +16,19 @@ test('tarefa de edição começa somente com leitura e exige ação mesmo em mod
   assert.equal(projectToolActionRequired(tools, effective), true);
 });
 
+test('criação explícita de arquivo novo pula exploração inexistente e força escrita', () => {
+  const messages = [{ role: 'user', content: 'Crie um index.html na pasta do projeto' }];
+  const effective = agenticToolsForMessages(tools, messages);
+  assert.deepEqual(effective.map(item => item.function.name), ['write_project_file']);
+  assert.equal(projectToolActionRequired(tools, effective), true);
+});
+
+test('adicionar conteúdo dentro de arquivo existente continua exigindo exploração', () => {
+  const messages = [{ role: 'user', content: 'Adicione um botão novo no index.html' }];
+  const effective = agenticToolsForMessages(tools, messages);
+  assert.deepEqual(effective.map(item => item.function.name), ['search_project', 'read_project_file']);
+});
+
 test('uma evidência mantém escolha entre contexto adicional ou escrita, mas exige ação', () => {
   const messages = [{ role: 'tool', name: 'search_project', content: '{"ok":true,"matches":[{"path":"index.html","line":10}]}' }];
   const effective = agenticToolsForMessages(tools, messages);
