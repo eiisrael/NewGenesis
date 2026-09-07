@@ -3,6 +3,7 @@ import { assertFreeOpenRouterModels, isFreeOpenRouterModel } from '../core/polic
 import { ProviderError } from '../core/errors.js';
 import { estimateRequestTokens } from '../core/context-engine.js';
 import { allowParallelProjectToolCalls, projectToolChoice } from '../core/project-tool-policy.js';
+import { parseImageGenerationRequest } from '../core/image-request.js';
 
 function textContent(content) {
   if (typeof content === 'string') return content;
@@ -96,6 +97,54 @@ function deadlineTimeout(defaultTimeoutMs, deadlineAt, providerId) {
     });
   }
   return Math.min(fallback, remaining);
+}
+
+function imageCapability(model, name) {
+  const supported = model?.supportedParameters;
+  if (Array.isArray(supported)) return supported.includes(name) ? { type: 'boolean' } : null;
+  if (!supported || typeof supported !== 'object') return null;
+  return Object.hasOwn(supported, name) ? supported[name] ?? { type: 'boolean' } : null;
+}
+
+function enumChoice(capability, preferred = []) {
+  const values = Array.isArray(capability?.values) ? capability.values.map(String) : [];
+  return preferred.find(value => values.includes(value)) || null;
+}
+
+function requestedAspectRatio(prompt, capability) {
+  const text = String(prompt || '').toLowerCase();
+  const preferred = /\b(story|stories|reels?|tiktok|vertical|retrato|9\s*:\s*16)\b/.test(text)
+    ? ['9:16', '4:5', '3:4']
+    : /\b(banner|capa|youtube|horizontal|paisagem|widescreen|16\s*:\s*9)\b/.test(text)
+      ? ['16:9', '3:2', '4:3']
+      : /\b(logo|icone|avatar|perfil|quadrad|1\s*:\s*1)\b/.test(text)
+        ? ['1:1']
+        : ['1:1', '4:3', '3:4'];
+  return enumChoice(capability, preferred);
+}
+
+function imageRequestBody(model, request) {
+  const body = { model: model.id, prompt: request.prompt, n: 1 };
+  const output = imageCapability(model, 'output_format');
+  const outputFormat = enumChoice(output, ['png', 'webp', 'jpeg']);
+  if (outputFormat) body.output_format = outputFormat;
+  else if (output) body.output_format = 'png';
+
+  const resolution = enumChoice(imageCapability(model, 'resolution'), ['1K', '1024', '1024x1024', '512']);
+  if (resolution) body.resolution = resolution;
+  const aspectRatio = requestedAspectRatio(request.prompt, imageCapability(model, 'aspect_ratio'));
+  if (aspectRatio) body.aspect_ratio = aspectRatio;
+  const quality = enumChoice(imageCapability(model, 'quality'), ['high', 'medium', 'auto']);
+  if (quality) body.quality = quality;
+
+  if (request.references.length) {
+    const capability = imageCapability(model, 'input_references');
+    const maxReferences = Math.max(1, Math.min(5, Number(capability?.max || 1)));
+    body.input_references = request.references.slice(0, maxReferences).map(url => ({
+      type: 'image_url', image_url: { url }
+    }));
+  }
+  return body;
 }
 
 export function modelScore(model, mode, taskProfile = {}) {
@@ -410,13 +459,25 @@ export class OpenAICompatibleProvider extends BaseProvider {
       .filter(model => isFreeOpenRouterModel(model.id))
       .filter(model => model.architecture?.output_modalities?.includes('image'))
       .filter(model => !String(model.id).toLowerCase().includes('vector'))
-      .map(model => ({ id: model.id, name: model.name || model.id, supportedParameters: model.supported_parameters || {} }));
+      .map(model => ({
+        id: model.id,
+        name: model.name || model.id,
+        supportedParameters: model.supported_parameters || {},
+        supportsStreaming: model.supports_streaming === true
+      }));
     this.imageCatalogAt = Date.now();
     return this.imageCatalog;
   }
 
   async generateImage({ prompt, signal, onAttempt = () => {} }) {
-    const models = await this.imageModels({ signal });
+    const request = parseImageGenerationRequest(prompt);
+    let models = await this.imageModels({ signal });
+    if (request.references.length) {
+      models = models.filter(model => imageCapability(model, 'input_references'));
+      if (!models.length) throw new ProviderError('Nenhum modelo gratuito de imagem com suporte a edição por referência está disponível na rota principal.', {
+        providerId: this.id, category: 'availability', code: 'free_image_edit_model_unavailable'
+      });
+    }
     if (!models.length) throw new ProviderError('Nenhum modelo gratuito de geração de imagens está disponível na rota principal.', {
       providerId: this.id, category: 'availability', code: 'free_image_model_unavailable'
     });
@@ -427,8 +488,7 @@ export class OpenAICompatibleProvider extends BaseProvider {
       onAttempt(model, attempts.length + 1);
       const started = Date.now();
       try {
-        const body = { model: model.id, prompt: String(prompt || '').trim(), n: 1 };
-        if (model.supportedParameters?.output_format) body.output_format = 'png';
+        const body = imageRequestBody(model, request);
         const { payload } = await this.requestJson(`${this.baseUrl}/images`, {
           method: 'POST', headers: this.headers(), body: JSON.stringify(body), signal
         }, Math.min(this.requestTimeoutMs, 120000));
@@ -438,7 +498,7 @@ export class OpenAICompatibleProvider extends BaseProvider {
           if (!base64 || mimeType === 'image/svg+xml') return null;
           const extension = ({ 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[mimeType] || 'png';
           return {
-            name: `genesis-${Date.now()}-${index + 1}.${extension}`,
+            name: `genesis-${request.operation === 'edit' ? 'edit' : 'image'}-${Date.now()}-${index + 1}.${extension}`,
             mimeType: mimeType.startsWith('image/') ? mimeType : 'image/png',
             dataUrl: `data:${mimeType.startsWith('image/') ? mimeType : 'image/png'};base64,${base64}`
           };
@@ -447,8 +507,11 @@ export class OpenAICompatibleProvider extends BaseProvider {
           providerId: this.id, category: 'availability', code: 'empty_image_response'
         }), payload?.usage);
         return {
-          content: 'Imagem criada pelo Gênesis com um modelo gratuito compatível.',
+          content: request.operation === 'edit'
+            ? 'Imagem editada pelo Gênesis usando a referência enviada, por uma rota gratuita compatível.'
+            : 'Imagem criada pelo Gênesis com um modelo gratuito compatível.',
           generatedImages: images,
+          imageOperation: request.operation,
           model: model.id,
           resolvedModel: String(payload?.model || model.id),
           resolvedProvider: payload?.provider || this.name,
@@ -467,7 +530,9 @@ export class OpenAICompatibleProvider extends BaseProvider {
         attempts.push({ model: model.id, message: error?.message || 'Falha na geração.' });
       }
     }
-    const error = new ProviderError('Os modelos gratuitos de imagem estão temporariamente indisponíveis.', {
+    const error = new ProviderError(request.operation === 'edit'
+      ? 'Os modelos gratuitos de edição de imagem estão temporariamente indisponíveis.'
+      : 'Os modelos gratuitos de imagem estão temporariamente indisponíveis.', {
       providerId: this.id, category: 'availability', code: 'free_image_routes_exhausted'
     });
     error.attempts = attempts;
