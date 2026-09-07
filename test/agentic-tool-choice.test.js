@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   agenticToolsForMessages,
-  prepareAgenticToolRequest
+  prepareAgenticToolRequest,
+  projectToolActionRequired
 } from '../src/providers/precise-openrouter-provider.js';
 
 const tool = name => ({ type: 'function', function: { name, parameters: { type: 'object' } } });
@@ -63,6 +64,16 @@ test('fase de mutação força uma ferramenta real', () => {
 test('verificação com uma ferramenta força exatamente essa função', () => {
   const body = prepareAgenticToolRequest({ tools: [tool('run_project_check')] });
   assert.deepEqual(body.tool_choice, { type: 'function', function: { name: 'run_project_check' } });
+});
+
+test('verificação já tentada não é repetida em loop quando falha', () => {
+  const supplied = [tool('run_project_check')];
+  const messages = [
+    { role: 'tool', name: 'run_project_check', tool_call_id: 'check-1', content: '{"ok":false,"code":"project_check_failed"}' }
+  ];
+  const effective = agenticToolsForMessages(supplied, messages);
+  assert.deepEqual(effective, []);
+  assert.equal(projectToolActionRequired(supplied, effective), false);
 });
 
 test('duas evidências úteis encerram exploração e expõem somente escrita', () => {
