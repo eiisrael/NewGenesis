@@ -43,7 +43,7 @@ test('mudança ampla recebe orçamento maior sem depender do domínio do projeto
   assert.equal(contract.toolPolicy.maxExplorationBatches, 4);
 });
 
-test('criação explícita de arquivo elimina busca e expõe somente escrita', () => {
+test('criação explícita de arquivo elimina busca, síntese remota extra e expõe somente escrita', () => {
   const contract = createTaskContract('Crie um index.html', {
     project: { ...project, fileCount: 0 }
   });
@@ -52,8 +52,33 @@ test('criação explícita de arquivo elimina busca e expõe somente escrita', (
   assert.equal(contract.toolPolicy.mutationIntent, 'create_file');
   assert.deepEqual(contract.toolPolicy.allowed, ['write_project_file']);
   assert.equal(contract.toolPolicy.searchFirst, false);
-  assert.equal(contract.requestBudget.limit, 3);
-  assert.equal(contract.requestBudget.deadlineMs, 60_000);
+  assert.equal(contract.toolPolicy.maxMutationAttempts, 1);
+  assert.equal(contract.requestBudget.limit, 1);
+  assert.equal(contract.requestBudget.reserveFinal, 0);
+  assert.equal(contract.requestBudget.deadlineMs, 45_000);
+});
+
+test('criação explícita de pasta usa uma única inferência e nenhuma exploração', () => {
+  const contract = createTaskContract('Crie uma pasta chamada componentes', { project });
+  assert.equal(contract.kind, 'change');
+  assert.equal(contract.toolPolicy.strategy, 'direct_mutation');
+  assert.equal(contract.toolPolicy.mutationIntent, 'create_directory');
+  assert.deepEqual(contract.toolPolicy.allowed, ['create_project_directory']);
+  assert.equal(contract.requestBudget.limit, 1);
+  assert.equal(contract.requestBudget.reserveFinal, 0);
+  assert.equal(contract.requestBudget.deadlineMs, 20_000);
+});
+
+test('arquivo único complexo permanece limitado e nunca herda orçamento de refatoração ampla', () => {
+  const contract = createTaskContract('Crie um index.html completo, inteiro e moderno com todos os componentes de uma aplicação.', {
+    project: { ...project, fileCount: 900 }
+  });
+  assert.equal(contract.toolPolicy.mutationIntent, 'create_file');
+  assert.equal(contract.complexity, 'high');
+  assert.deepEqual(contract.toolPolicy.allowed, ['write_project_file']);
+  assert.equal(contract.requestBudget.limit, 2);
+  assert.equal(contract.requestBudget.reserveFinal, 0);
+  assert.ok(contract.requestBudget.limit < 14);
 });
 
 test('adicionar conteúdo em arquivo existente continua sendo edição com leitura', () => {
