@@ -95,6 +95,38 @@ test('pedido exato de criar index.html vira escrita real já na primeira ação 
   });
 });
 
+test('se modelo gratuito devolver HTML bruto, Genesis recupera a escrita em vez de descartar a saída', async t => {
+  const provider = createProvider();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const html = '<!doctype html><html lang="pt-BR"><head><title>Genesis</title></head><body><h1>Teste</h1></body></html>';
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      model: 'dynamic-free-model',
+      choices: [{ message: { content: html }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 90, completion_tokens: 35, total_tokens: 125 }
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const candidate = provider.candidate('openrouter/free', [], 'code', { tools: true });
+  const result = await provider.generate({
+    candidate,
+    messages: [{ role: 'user', content: 'Crie um index.html' }],
+    maxOutputTokens: 500,
+    temperature: 0,
+    sessionId: 'raw-html-session',
+    tools: writeTool
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].function.name, 'write_project_file');
+  assert.deepEqual(JSON.parse(result.toolCalls[0].function.arguments), { path: 'index.html', content: html });
+  assert.equal(result.toolRecovery, 'raw-file-content');
+});
+
 test('não repete modelo exato quando a cota dele acabou', async t => {
   const provider = createProvider();
   const originalFetch = globalThis.fetch;
