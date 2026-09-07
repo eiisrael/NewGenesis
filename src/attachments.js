@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { classifyImageRequest, embedImageEditRequest } from './core/image-request.js';
 
 const MIB = 1024 * 1024;
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -87,6 +88,40 @@ function validateContent(kind, mimeType, buffer) {
       throw attachmentError('O arquivo de texto contém dados binários não suportados.', 'invalid_text_file');
     }
   }
+}
+
+function imageDataUrls(message) {
+  return (message?.attachments || [])
+    .filter(attachment => attachment?.kind === 'image' && typeof attachment?.dataUrl === 'string')
+    .map(attachment => attachment.dataUrl);
+}
+
+function prepareImageEditingTurn(conversation) {
+  const messages = conversation?.messages || [];
+  const latestUserIndex = messages.findLastIndex(message => message?.role === 'user');
+  if (latestUserIndex < 0) return;
+  const latestUser = messages[latestUserIndex];
+  const currentImages = imageDataUrls(latestUser);
+  const hasNonImageAttachments = (latestUser.attachments || []).some(attachment => attachment?.kind !== 'image');
+  if (hasNonImageAttachments) return;
+
+  let recentImages = [];
+  for (let index = latestUserIndex - 1; index >= Math.max(0, latestUserIndex - 6); index -= 1) {
+    if (messages[index]?.role !== 'assistant') continue;
+    recentImages = imageDataUrls(messages[index]);
+    if (recentImages.length) break;
+  }
+  const operation = classifyImageRequest(latestUser.content, {
+    currentImages: currentImages.length,
+    recentImages: recentImages.length
+  });
+  if (operation !== 'edit') return;
+  const references = currentImages.length ? currentImages : recentImages;
+  if (!references.length) return;
+
+  latestUser.content = embedImageEditRequest(latestUser.content, references);
+  if (currentImages.length) latestUser.attachments = [];
+  latestUser.meta = { ...(latestUser.meta || {}), imageEditPrepared: true, imageReferenceCount: references.length };
 }
 
 export class AttachmentStore {
@@ -176,6 +211,7 @@ export class AttachmentStore {
         return { ...attachment, dataUrl: `data:${attachment.mimeType};base64,${buffer.toString('base64')}` };
       }));
     }
+    prepareImageEditingTurn(hydrated);
     return hydrated;
   }
 
