@@ -89,22 +89,41 @@ function onlyNamedTool(tools, name) {
   return selected.length ? selected : null;
 }
 
+export function projectMutationIntent(objective = '') {
+  const text = normalizedObjective(objective).replace(/[`“”]/g, '"');
+
+  const directFileCreation = /\b(?:crie|criar|create|adicione|adicionar|add)\s+(?:(?:um|uma|o|a|novo|nova|new)\s+)?(?:arquivo\s+|file\s+)?["']?[a-z0-9_.\/-]+\.[a-z0-9]{1,12}["']?\b/.test(text)
+    || /\b(?:crie|criar|create)\b.{0,36}\b(?:arquivo|file)\b/.test(text);
+  if (directFileCreation) return 'create_file';
+
+  const directDirectoryCreation = /\b(?:crie|criar|create|adicione|adicionar|add)\b.{0,28}\b(?:pasta|diretorio|directory|folder)\b/.test(text);
+  if (directDirectoryCreation) return 'create_directory';
+
+  const explicitDelete = /\b(exclu|delet|apag)\w*\b.{0,32}\b(arquivo|pasta|diretorio|caminho|file|folder|directory|path)\b/.test(text)
+    || /\bremov\w*\b.{0,20}\b(o|a|um|uma)\s+(arquivo|pasta|diretorio|file|folder|directory)\b/.test(text);
+  if (explicitDelete) return 'delete';
+
+  if (/\b(mov|renome)\w*\b.{0,40}\b(arquivo|pasta|diretorio|caminho|file|folder|directory|path)\b/.test(text)) return 'move';
+
+  return 'edit';
+}
+
+export function projectMutationNeedsExploration(objective = '') {
+  return !['create_file', 'create_directory'].includes(projectMutationIntent(objective));
+}
+
 export function preferredProjectMutationTools(tools = [], { objective = '', hasReadEvidence = false } = {}) {
   const mutations = tools.filter(tool => isProjectMutationTool(tool));
   if (mutations.length <= 1) return mutations;
 
+  const intent = projectMutationIntent(objective);
+  if (intent === 'delete') return onlyNamedTool(mutations, 'delete_project_path') || mutations;
+  if (intent === 'move') return onlyNamedTool(mutations, 'move_project_path') || mutations;
+  if (intent === 'create_directory') return onlyNamedTool(mutations, 'create_project_directory') || mutations;
+  if (intent === 'create_file') return onlyNamedTool(mutations, 'write_project_file') || mutations;
+
   const text = normalizedObjective(objective);
-  const explicitDelete = /\b(exclu|delet|apag)\w*\b.{0,32}\b(arquivo|pasta|diretorio|caminho)\b/.test(text)
-    || /\bremov\w*\b.{0,20}\b(o|a|um|uma)\s+(arquivo|pasta|diretorio)\b/.test(text);
-  if (explicitDelete) return onlyNamedTool(mutations, 'delete_project_path') || mutations;
-  if (/\b(mov|renome)\w*\b.{0,40}\b(arquivo|pasta|diretorio|caminho)\b/.test(text)) {
-    return onlyNamedTool(mutations, 'move_project_path') || mutations;
-  }
-  if (/\b(cri|adic)\w*\b.{0,24}\b(pasta|diretorio)\b/.test(text)) {
-    return onlyNamedTool(mutations, 'create_project_directory') || mutations;
-  }
-  if (/\b(cri|adic)\w*\b.{0,24}\barquivo\b/.test(text)
-    || /\b(reescrev|substitu)\w*\b.{0,32}\barquivo\b/.test(text)) {
+  if (/\b(reescrev|substitu)\w*\b.{0,32}\barquivo\b/.test(text)) {
     return onlyNamedTool(mutations, 'write_project_file') || mutations;
   }
   if (hasReadEvidence) return onlyNamedTool(mutations, 'replace_project_text') || mutations;
