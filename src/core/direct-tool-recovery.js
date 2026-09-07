@@ -8,17 +8,53 @@ function normalizePath(value) {
   return String(value || '').trim().replace(/^['"`]+|['"`.,;:!?]+$/g, '').replace(/\\/g, '/');
 }
 
-function pathCandidates(value) {
+const SPECIAL_FILE_NAMES = new Set([
+  'dockerfile', 'makefile', 'procfile', 'license', 'readme', 'changelog',
+  '.gitignore', '.dockerignore', '.env', '.npmrc', '.editorconfig'
+]);
+
+function validRelativePath(candidate) {
+  const value = normalizePath(candidate);
+  if (!value || /^https?:\/\//i.test(value) || value.includes('..') || pathIsAbsolute(value)) return '';
+  return value;
+}
+
+function pathIsAbsolute(value) {
+  return /^\/?[a-z]:\//i.test(value) || value.startsWith('/') || value.startsWith('\\\\');
+}
+
+function filePathCandidates(value) {
   const text = String(value || '');
   const matches = [];
   const patterns = [
     /[`"']([^`"'\r\n]+\.[a-z0-9]{1,12})[`"']/gi,
-    /(?:^|\s)([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*\.[a-z0-9]{1,12})(?=$|[\s,.;:!?])/gi
+    /(?:^|\s)([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*\.[a-z0-9]{1,12})(?=$|[\s,.;:!?])/gi,
+    /(?:^|[\s`"'])(Dockerfile|Makefile|Procfile|LICENSE|README|CHANGELOG|\.gitignore|\.dockerignore|\.env|\.npmrc|\.editorconfig)(?=$|[\s`"',.;:!?])/gi
   ];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
-      const candidate = normalizePath(match[1]);
-      if (!candidate || /^https?:\/\//i.test(candidate) || candidate.includes('..')) continue;
+      const candidate = validRelativePath(match[1]);
+      if (!candidate) continue;
+      const leaf = candidate.toLowerCase().split('/').pop();
+      if (!leaf.includes('.') && !SPECIAL_FILE_NAMES.has(leaf)) continue;
+      if (!matches.includes(candidate)) matches.push(candidate);
+    }
+  }
+  return matches;
+}
+
+function directoryPathCandidates(value) {
+  const text = String(value || '');
+  const matches = [];
+  const patterns = [
+    /\b(?:pasta|diretorio|folder|directory)\s+(?:chamad[ao]\s+|named\s+)?[`"']?([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*)[`"']?/gi,
+    /\b(?:crie|criar|create)\s+[`"']([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*)\/[`"']/gi
+  ];
+  const ignored = new Set(['do', 'da', 'de', 'no', 'na', 'projeto', 'project', 'nova', 'novo', 'new']);
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const candidate = validRelativePath(match[1]);
+      if (!candidate || ignored.has(candidate.toLowerCase())) continue;
       if (!matches.includes(candidate)) matches.push(candidate);
     }
   }
@@ -28,7 +64,17 @@ function pathCandidates(value) {
 export function inferProjectTargetPath(messages = []) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role !== 'user') continue;
-    const candidates = pathCandidates(textContent(messages[index].content));
+    const candidates = filePathCandidates(textContent(messages[index].content));
+    if (candidates.length === 1) return candidates[0];
+    if (candidates.length > 1) return '';
+  }
+  return '';
+}
+
+export function inferProjectDirectoryPath(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role !== 'user') continue;
+    const candidates = directoryPathCandidates(textContent(messages[index].content));
     if (candidates.length === 1) return candidates[0];
     if (candidates.length > 1) return '';
   }
@@ -106,18 +152,41 @@ function looksLikePython(value) {
   return /(?:^|\n)\s*(?:from\s+\S+\s+import\s|import\s+\S+|def\s+\w+\s*\(|class\s+\w+|if\s+__name__\s*==|#\s)/m.test(value);
 }
 
+function looksLikePhp(value) {
+  return /<\?php\b|(?:^|\n)\s*(?:namespace\s+|use\s+\S+;|class\s+\w+)/m.test(value);
+}
+
+function looksLikeGo(value) {
+  return /(?:^|\n)\s*package\s+\w+|(?:^|\n)\s*func\s+\w+\s*\(/m.test(value);
+}
+
+function looksLikeRust(value) {
+  return /(?:^|\n)\s*(?:use\s+\S+;|fn\s+\w+\s*\(|pub\s+(?:fn|struct|enum|mod)\b)/m.test(value);
+}
+
 function looksLikeFileContent(content, path) {
   const text = String(content || '').trim();
   if (!text) return false;
-  const extension = String(path || '').toLowerCase().split('.').pop();
+  const leaf = String(path || '').toLowerCase().split('/').pop();
+  const extension = leaf.includes('.') ? leaf.split('.').pop() : '';
   if (['html', 'htm'].includes(extension)) return looksLikeHtml(text);
   if (extension === 'css') return looksLikeCss(text);
   if (['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx'].includes(extension)) return looksLikeScript(text);
   if (extension === 'py') return looksLikePython(text);
+  if (extension === 'php') return looksLikePhp(text);
+  if (extension === 'go') return looksLikeGo(text);
+  if (extension === 'rs') return looksLikeRust(text);
+  if (['c', 'h', 'cc', 'cpp', 'hpp', 'java', 'kt', 'kts', 'cs'].includes(extension)) {
+    return /(?:^|\n)\s*(?:#include\b|package\s+|import\s+|public\s+class\b|class\s+\w+|using\s+\S+;)/m.test(text);
+  }
+  if (['sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd'].includes(extension)) {
+    return /^(?:#!|@echo\s+off|param\s*\(|Set-StrictMode\b|\$ErrorActionPreference\b)/i.test(text);
+  }
+  if (['sql'].includes(extension)) return /\b(?:select|create|alter|insert|update|delete|with)\b/i.test(text);
   if (extension === 'json') return jsonObject(text) !== null;
   if (['md', 'markdown'].includes(extension)) return /(?:^|\n)\s*(?:#{1,6}\s|[-*+]\s|```|>\s)/m.test(text);
   if (['xml', 'svg'].includes(extension)) return /^\s*<\??[a-z]/i.test(text);
-  if (['txt', 'csv', 'yml', 'yaml', 'toml', 'ini', 'env'].includes(extension)) return false;
+  if (SPECIAL_FILE_NAMES.has(leaf)) return text.length > 0 && !/^claro[,.!\s]|^vou\s|^aqui\s+est[aá]/i.test(text);
   return false;
 }
 
@@ -125,14 +194,16 @@ function recoveredWriteCall(content, messages) {
   const path = inferProjectTargetPath(messages);
   if (!path) return null;
 
-  const exact = stripSingleFence(content);
-  if (looksLikeFileContent(exact, path)) {
-    return toolCall('write_project_file', { path, content: exact }, 'raw-file-content');
-  }
-
+  // Se houver exatamente um bloco de código, ele tem precedência. Isso impede que
+  // frases como "Arquivo completo:" ou as próprias crases sejam gravadas no disco.
   const fenced = extractOnlyFence(content);
   if (fenced && looksLikeFileContent(fenced, path)) {
     return toolCall('write_project_file', { path, content: fenced }, 'fenced-file-content');
+  }
+
+  const exact = stripSingleFence(content);
+  if (!exact.includes('```') && looksLikeFileContent(exact, path)) {
+    return toolCall('write_project_file', { path, content: exact }, 'raw-file-content');
   }
   return null;
 }
@@ -154,7 +225,7 @@ export function recoverRequiredProjectToolCall({ result, tools = [], messages = 
   }
 
   if (name === 'create_project_directory') {
-    const path = inferProjectTargetPath(messages);
+    const path = inferProjectDirectoryPath(messages);
     if (path) {
       return {
         ...result,
