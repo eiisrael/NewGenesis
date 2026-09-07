@@ -493,7 +493,10 @@ export class ProjectStore {
   }
 
   async open(input = {}) {
-    if (!Array.isArray(input.files) || !input.files.length) throw projectError('A pasta selecionada não possui arquivos de texto ou código compatíveis.', 'empty_project');
+    const nativeFolder = input.source === 'native-folder';
+    if (!Array.isArray(input.files) || (!input.files.length && !nativeFolder)) {
+      throw projectError('A pasta selecionada não possui arquivos de texto ou código compatíveis.', 'empty_project');
+    }
     if (input.files.length > PROJECT_LIMITS.maxFiles) throw projectError(`O projeto excede o limite operacional configurado de ${PROJECT_LIMITS.maxFiles} arquivos analisáveis.`, 'project_too_many_files', 413);
     const seen = new Set();
     const files = [];
@@ -653,7 +656,6 @@ export class ProjectStore {
       }
     };
     await walk(root);
-    if (!entries.length) throw projectError('A pasta selecionada não possui arquivos de texto ou código compatíveis.', 'empty_project');
 
     const previous = this.project?.rootPath === root ? this.project : null;
     const scannedAt = new Date().toISOString();
