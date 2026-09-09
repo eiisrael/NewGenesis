@@ -17,6 +17,7 @@ const tool = name => ({
 });
 
 const writeTool = [tool('write_project_file')];
+const batchWriteTool = [tool('write_project_files')];
 
 test('não reutiliza mutações de uma tarefa anterior na mesma conversa', async t => {
   const provider = createProvider();
@@ -125,6 +126,75 @@ test('se modelo gratuito devolver HTML bruto, Genesis recupera a escrita em vez 
   assert.equal(result.toolCalls[0].function.name, 'write_project_file');
   assert.deepEqual(JSON.parse(result.toolCalls[0].function.arguments), { path: 'index.html', content: html });
   assert.equal(result.toolRecovery, 'raw-file-content');
+});
+
+test('serviço multi-arquivo evita tool calling nativo mesmo em modelo que anuncia tools', async t => {
+  const provider = createProvider();
+  const originalFetch = globalThis.fetch;
+  let requestBody = null;
+  const content = [
+    '```html',
+    '<!doctype html>',
+    '<html lang="pt-BR">',
+    '<head><link rel="stylesheet" href="styles.css"></head>',
+    '<body><button id="new-verse">Outro versículo</button><script src="script.js"></script></body>',
+    '</html>',
+    '```',
+    '```css',
+    'body {',
+    '  margin: 0;',
+    '  font-family: system-ui, sans-serif;',
+    '}',
+    '```',
+    '```javascript',
+    'const button = document.getElementById("new-verse");',
+    'button.addEventListener("click", () => {',
+    '  document.body.dataset.clicked = "yes";',
+    '});',
+    '```'
+  ].join('\n');
+
+  globalThis.fetch = async (_url, options = {}) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      model: 'poolside/laguna-xs-2.1:free',
+      choices: [{ message: { content }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 500, completion_tokens: 700, total_tokens: 1200 }
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await provider.generate({
+    candidate: {
+      model: 'poolside/laguna-xs-2.1:free',
+      supportsTools: true,
+      toolMode: 'native',
+      supportedParameters: ['tools', 'parallel_tool_calls'],
+      contextWindow: 32_000,
+      outputLimit: 4_000
+    },
+    messages: [{
+      role: 'user',
+      content: 'Crie uma página bonita com versículos bíblicos. Faça em HTML, CSS e JS e crie os arquivos na pasta do projeto.'
+    }],
+    maxOutputTokens: 4_000,
+    temperature: 0,
+    sessionId: 'service-native-tool-session',
+    tools: batchWriteTool
+  });
+
+  assert.equal(requestBody.tools, undefined);
+  assert.equal(requestBody.tool_choice, undefined);
+  assert.match(JSON.stringify(requestBody.messages), /bloco Markdown completo/i);
+  assert.match(JSON.stringify(requestBody.messages), /NÃO coloque HTML\/CSS\/JS dentro de strings JSON/i);
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].function.name, 'write_project_files');
+  assert.equal(result.toolRecovery, 'multi-fence-service-files');
+  const args = JSON.parse(result.toolCalls[0].function.arguments);
+  assert.deepEqual(args.files.map(file => file.path), ['index.html', 'styles.css', 'script.js']);
+  assert.match(args.files[0].content, /\n<html/);
+  assert.match(args.files[1].content, /\n  margin/);
+  assert.match(args.files[2].content, /\nbutton\.addEventListener/);
 });
 
 test('não repete modelo exato quando a cota dele acabou', async t => {
