@@ -363,7 +363,7 @@ async function replacementRecoveryContext(projectStore, args) {
   const oldLines = String(args.old_text || '').split(/\r?\n/).map(line => line.trim()).filter(line => line.length >= 6);
   let targetIndex = -1;
 
-  for (const candidate of oldLines.sort((left, right) => right.length - left.length()).slice(0, 8)) {
+  for (const candidate of oldLines.sort((left, right) => right.length - left.length).slice(0, 8)) {
     const probe = candidate.length > 160 ? candidate.slice(0, 160) : candidate;
     const found = lines.findIndex(line => line.includes(probe));
     if (found >= 0) { targetIndex = found; break; }
