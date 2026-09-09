@@ -106,7 +106,21 @@ function stripRawTechnicalLines(value) {
   const lines = String(value || '').split('\n');
   const output = [];
   let technicalRun = false;
+  let blockComment = false;
   for (const line of lines) {
+    const trimmed = String(line || '').trim();
+    if (blockComment) {
+      if (!technicalRun) output.push(CODE_NOTICE);
+      technicalRun = true;
+      if (trimmed.includes('*/')) blockComment = false;
+      continue;
+    }
+    if (/^\/\*/.test(trimmed)) {
+      if (!technicalRun) output.push(CODE_NOTICE);
+      technicalRun = true;
+      blockComment = !trimmed.includes('*/');
+      continue;
+    }
     if (looksLikeTechnicalLine(line)) {
       if (!technicalRun) output.push(CODE_NOTICE);
       technicalRun = true;
@@ -121,7 +135,7 @@ function stripRawTechnicalLines(value) {
 function looksLikeTechnicalLine(value) {
   const line = String(value || '').trim();
   if (!line) return false;
-  if (/^\/\//.test(line) || /^\/\*/.test(line) || /^\*/.test(line) || /^#!\//.test(line)) return true;
+  if (/^\/\//.test(line) || /^#!\//.test(line)) return true;
   if (/^\s*[{}\[\],]+\s*$/.test(line)) return true;
   if (/^\s*["']?(?:tool|command|arguments|result|path|content)["']?\s*:/i.test(line)) return true;
   if (/^\s*\{?.*["'](?:tool|command|arguments)["']\s*:/i.test(line)) return true;
