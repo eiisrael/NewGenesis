@@ -238,12 +238,23 @@ function defaultPathForExtension(extension) {
 
 function fenceExtension(fence) {
   const language = String(fence?.language || '').toLowerCase();
-  if (['html', 'htm'].includes(language) || looksLikeHtml(fence?.content)) return 'html';
-  if (language === 'css' || looksLikeCss(fence?.content)) return 'css';
-  if (['javascript', 'js', 'mjs', 'cjs'].includes(language) || looksLikeScript(fence?.content)) return 'js';
+
+  // Rótulos explícitos de fenced code são mais confiáveis que heurísticas de
+  // conteúdo. JavaScript com callbacks contém `{` e pode parecer CSS para um
+  // detector estrutural; respeitar primeiro `javascript`/`js` evita perder o
+  // script em entregas HTML + CSS + JS.
+  if (['html', 'htm'].includes(language)) return 'html';
+  if (language === 'css') return 'css';
+  if (['javascript', 'js', 'mjs', 'cjs'].includes(language)) return 'js';
   if (['typescript', 'ts'].includes(language)) return 'ts';
-  if (['python', 'py'].includes(language) || looksLikePython(fence?.content)) return 'py';
-  if (language === 'php' || looksLikePhp(fence?.content)) return 'php';
+  if (['python', 'py'].includes(language)) return 'py';
+  if (language === 'php') return 'php';
+
+  if (looksLikeHtml(fence?.content)) return 'html';
+  if (looksLikeScript(fence?.content)) return 'js';
+  if (looksLikeCss(fence?.content)) return 'css';
+  if (looksLikePython(fence?.content)) return 'py';
+  if (looksLikePhp(fence?.content)) return 'php';
   return '';
 }
 
