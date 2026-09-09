@@ -5,8 +5,17 @@
 .env.*
 !.env.example
 node_modules/
+.cache/
+coverage/
+.nyc_output/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.log
 *.tmp
 *.tgz
+*.download
 __pycache__/
 *.py[cod]
+.DS_Store
+Thumbs.db
