@@ -19,11 +19,10 @@ export function normalizeVoiceTranscript(value) {
 
 export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   let text = String(value || '').replace(/\r\n?/g, '\n');
-  // Primeiro removemos somente fences completos. Depois, se o streaming ainda
-  // deixou um fence sem fechamento, removemos apenas essa cauda. Assim uma fence
-  // fechada nunca engole a prosa normal que vem depois dela.
-  text = text.replace(/```[a-z0-9_+.#-]*\s*\n?[\s\S]*?```/gi, `\n${CODE_NOTICE}\n`);
-  text = text.replace(/```[a-z0-9_+.#-]*\s*\n?[\s\S]*$/gi, `\n${CODE_NOTICE}\n`);
+  // Fences são filtrados por linha para distinguir blocos markdown de crases
+  // inline. Se o streaming ainda não trouxe o fechamento, apenas a cauda do bloco
+  // fica silenciosa; a prosa anterior e posterior a fences completos é preservada.
+  text = stripFencedCode(text);
   text = stripRawTechnicalLines(text);
   text = text.replace(/(?:^|\n)(?:\|[^\n]+\|\n)(?:\|?\s*:?-{3,}[^\n]*\n)(?:\|[^\n]+\|(?:\n|$))+/gm, `\n${TABLE_NOTICE}\n`);
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, label) => label ? `Imagem: ${label}.` : 'Há uma imagem na resposta.');
@@ -86,6 +85,21 @@ export function takeStableSentences(value, { flush = false, maxChunk = 260 } = {
   }
   if (current) chunks.push(current);
   return { chunks, rest };
+}
+
+function stripFencedCode(value) {
+  const output = [];
+  let inFence = false;
+  for (const line of String(value || '').split('\n')) {
+    const marker = line.match(/^\s*```/);
+    if (marker) {
+      if (!inFence) output.push(CODE_NOTICE);
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) output.push(line);
+  }
+  return output.join('\n');
 }
 
 function stripRawTechnicalLines(value) {
