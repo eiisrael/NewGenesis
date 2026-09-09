@@ -43,6 +43,23 @@ export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
     path: { type: 'string', description: 'Caminho relativo do arquivo.' },
     content: { type: 'string', description: 'Conteúdo completo que será gravado.' }
   }, ['path', 'content']),
+  functionTool('write_project_files', 'Grave todos os arquivos de uma entrega multi-arquivo em uma única operação transacional. Use para páginas, sites, apps e scaffolds que exigem HTML/CSS/JS ou vários artefatos. Envie cada arquivo completo. O sucesso só é retornado após releitura e confirmação de TODOS os arquivos; se qualquer gravação falhar, o Genesis tenta restaurar o estado anterior para não deixar uma entrega pela metade.', {
+    files: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 16,
+      description: 'Lista completa de arquivos que compõem a entrega.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'content'],
+        properties: {
+          path: { type: 'string', description: 'Caminho relativo do arquivo dentro do projeto.' },
+          content: { type: 'string', description: 'Conteúdo completo final do arquivo.' }
+        }
+      }
+    }
+  }, ['files']),
   functionTool('replace_project_text', 'Edite um trecho exato de um arquivo existente. Prefira esta ferramenta para mudanças localizadas: reduz risco, tokens e preserva código não relacionado. Se o trecho tiver mudado no disco, a falha retorna um recorte atual para você corrigir old_text e tentar novamente sem reabrir uma exploração ampla. O sucesso só é retornado depois de uma releitura pós-escrita do arquivo.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo existente.' },
     old_text: { type: 'string', minLength: 1, maxLength: 32000, description: 'Trecho atual exato que será substituído.' },
@@ -114,6 +131,91 @@ async function confirmWrittenFile(projectStore, relativePath, expectedContent) {
     );
   }
   return { verified: true, verification: 'read_after_write' };
+}
+
+function safeBatchFiles(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 16) {
+    throw toolError('write_project_files exige entre 1 e 16 arquivos.', 'invalid_batch_files');
+  }
+  const seen = new Set();
+  let totalCharacters = 0;
+  const files = value.map((file, index) => {
+    const path = typeof file?.path === 'string' ? file.path.trim() : '';
+    if (!path) throw toolError(`O arquivo ${index + 1} não possui caminho válido.`, 'invalid_batch_file_path');
+    if (seen.has(path.toLowerCase())) throw toolError(`O caminho “${path}” foi enviado mais de uma vez no mesmo lote.`, 'duplicate_batch_file_path');
+    if (typeof file?.content !== 'string') throw toolError(`O arquivo “${path}” não possui conteúdo textual válido.`, 'invalid_batch_file_content');
+    seen.add(path.toLowerCase());
+    totalCharacters += file.content.length;
+    return { path, content: file.content };
+  });
+  if (totalCharacters > 500_000) {
+    throw toolError('O lote excede 500.000 caracteres. Divida a entrega em partes menores.', 'project_batch_write_too_large');
+  }
+  return files;
+}
+
+async function snapshotProjectFile(projectStore, relativePath) {
+  try {
+    return { existed: true, content: await projectStore.readText(relativePath) };
+  } catch (error) {
+    if (['project_path_not_found', 'ENOENT'].includes(error?.code)) return { existed: false, content: '' };
+    throw error;
+  }
+}
+
+function assertNonDestructiveRewrite(existing, nextContent, relativePath = '') {
+  if (existing === null || existing === undefined) return;
+  const next = String(nextContent ?? '');
+  const removedCharacters = existing.length - next.length;
+  if (existing.length >= 2_000 && removedCharacters >= 2_000 && next.length < existing.length * 0.5) {
+    throw toolError(
+      `Reescrita destrutiva bloqueada${relativePath ? ` em “${relativePath}”` : ''}: ${existing.length} → ${next.length} caracteres. Use replace_project_text para alterar somente o trecho solicitado.`,
+      'project_destructive_rewrite'
+    );
+  }
+}
+
+async function writeProjectFilesAtomically(projectStore, rawFiles) {
+  const files = safeBatchFiles(rawFiles);
+  const snapshots = new Map();
+  for (const file of files) {
+    const snapshot = await snapshotProjectFile(projectStore, file.path);
+    snapshots.set(file.path, snapshot);
+    assertNonDestructiveRewrite(snapshot.existed ? snapshot.content : null, file.content, file.path);
+  }
+
+  const applied = [];
+  try {
+    for (const file of files) {
+      await projectStore.writeText(file.path, file.content);
+      await confirmWrittenFile(projectStore, file.path, file.content);
+      applied.push(file.path);
+    }
+  } catch (error) {
+    let rollbackFailure = null;
+    for (const relativePath of [...applied].reverse()) {
+      const snapshot = snapshots.get(relativePath);
+      try {
+        if (snapshot?.existed) {
+          await projectStore.writeText(relativePath, snapshot.content);
+          await confirmWrittenFile(projectStore, relativePath, snapshot.content);
+        } else {
+          await projectStore.deletePath(relativePath);
+        }
+      } catch (rollbackError) {
+        rollbackFailure ||= rollbackError;
+      }
+    }
+    if (rollbackFailure) {
+      throw toolError(
+        `A gravação em lote falhou e a restauração do estado anterior também encontrou erro: ${rollbackFailure?.message || 'rollback incompleto'}.`,
+        'project_batch_write_rollback_failed'
+      );
+    }
+    throw error;
+  }
+
+  return files;
 }
 
 async function exists(target) {
@@ -205,6 +307,12 @@ async function commandFor(root, check) {
 
 function operationSummary(name, args) {
   if (name === 'write_project_file') return { title: 'Alterar arquivo', detail: `${args.path} · ${String(args.content || '').length} caracteres`, kind: 'write' };
+  if (name === 'write_project_files') {
+    const files = Array.isArray(args.files) ? args.files : [];
+    const names = files.map(file => file?.path).filter(Boolean).slice(0, 8);
+    const total = files.reduce((sum, file) => sum + String(file?.content || '').length, 0);
+    return { title: 'Criar entrega multi-arquivo', detail: `${files.length} arquivo(s) · ${total} caracteres · ${names.join(', ')}`, kind: 'write' };
+  }
   if (name === 'replace_project_text') return { title: 'Editar trecho', detail: `${args.path} · ${String(args.old_text || '').length} → ${String(args.new_text || '').length} caracteres`, kind: 'write' };
   if (name === 'create_project_directory') return { title: 'Criar pasta', detail: args.path, kind: 'write' };
   if (name === 'move_project_path') return { title: 'Mover ou renomear', detail: `${args.from} → ${args.to}`, kind: 'move' };
@@ -416,27 +524,29 @@ export class ProjectToolExecutor {
       };
     }
     if (name === 'write_project_file') {
-      if (typeof this.projectStore.readText === 'function') {
-        let existing = null;
-        try { existing = await this.projectStore.readText(args.path); }
-        catch (error) {
-          if (!['project_path_not_found', 'ENOENT'].includes(error?.code)) throw error;
-        }
-        const nextContent = String(args.content ?? '');
-        const removedCharacters = existing === null ? 0 : existing.length - nextContent.length;
-        if (existing !== null && existing.length >= 2_000 && removedCharacters >= 2_000 && nextContent.length < existing.length * 0.5) {
-          throw toolError(
-            `Reescrita destrutiva bloqueada: ${existing.length} → ${nextContent.length} caracteres. Use replace_project_text para alterar somente o trecho solicitado.`,
-            'project_destructive_rewrite'
-          );
-        }
+      let existing = null;
+      try { existing = await this.projectStore.readText(args.path); }
+      catch (error) {
+        if (!['project_path_not_found', 'ENOENT'].includes(error?.code)) throw error;
       }
+      assertNonDestructiveRewrite(existing, args.content, args.path);
       await this.projectStore.writeText(args.path, args.content);
       const confirmation = await confirmWrittenFile(this.projectStore, args.path, args.content);
       return {
         path: args.path,
         ...confirmation,
         summary: `${args.path} gravado e confirmado por releitura no disco.`
+      };
+    }
+    if (name === 'write_project_files') {
+      const files = await writeProjectFilesAtomically(this.projectStore, args.files);
+      const paths = files.map(file => file.path);
+      return {
+        files: paths.map(path => ({ path, verified: true })),
+        paths,
+        verified: true,
+        verification: 'batch_read_after_write',
+        summary: `${paths.length} arquivo(s) gravado(s) e confirmado(s) por releitura no disco: ${paths.join(', ')}.`
       };
     }
     if (name === 'replace_project_text') {

@@ -7,6 +7,8 @@ const TOOL_ALIASES = Object.freeze({
   search_project: 'search_project',
   write_file: 'write_project_file',
   write_project_file: 'write_project_file',
+  write_files: 'write_project_files',
+  write_project_files: 'write_project_files',
   replace_text: 'replace_project_text',
   replace_project_text: 'replace_project_text',
   create_directory: 'create_project_directory',
@@ -60,8 +62,18 @@ function invocationFromContent(content) {
   return { name, args };
 }
 
+function validBatchFiles(value) {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 16
+    && value.every(file => file && typeof file === 'object' && !Array.isArray(file)
+      && typeof file.path === 'string' && file.path.trim()
+      && typeof file.content === 'string');
+}
+
 function validArguments(name, args) {
   if (name === 'write_project_file') return typeof args.path === 'string' && typeof args.content === 'string';
+  if (name === 'write_project_files') return validBatchFiles(args.files);
   if (name === 'replace_project_text') {
     return typeof args.path === 'string'
       && typeof args.old_text === 'string'
