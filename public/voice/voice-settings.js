@@ -12,8 +12,8 @@ export const DEFAULT_VOICE_SETTINGS = Object.freeze({
   preset: 'natural',
   ttsVoice: 'pf_dora',
   rate: 1,
-  vadThreshold: 0.018,
-  vadSilenceMs: 550
+  vadThreshold: 0.009,
+  vadSilenceMs: 650
 });
 
 const enums = Object.freeze({
