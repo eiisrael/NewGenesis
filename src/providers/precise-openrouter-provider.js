@@ -175,6 +175,21 @@ export function prepareAgenticToolRequest(body = {}) {
   };
 }
 
+function textToolInstruction(tools = []) {
+  const names = tools.map(tool => tool?.function?.name).filter(Boolean);
+  if (names.length === 1 && names[0] === 'write_project_files') {
+    return [
+      'O projeto ativo já está disponível e esta fase exige uma gravação real multi-arquivo.',
+      'Para evitar corrupção de quebras de linha, NÃO coloque HTML/CSS/JS dentro de strings JSON.',
+      'Responda somente com um bloco Markdown completo para cada arquivo solicitado, usando as linguagens corretas (por exemplo ```html, ```css e ```javascript).',
+      'Use quebras de linha reais dentro dos blocos; nunca substitua quebras por caracteres “n” nem por texto \\n.',
+      'Para uma página HTML/CSS/JS padrão, use nomes coerentes: index.html, styles.css e script.js, e faça o HTML referenciar exatamente esses nomes.',
+      'Não escreva explicações fora dos blocos. O Genesis converterá os blocos em uma chamada write_project_files real e só concluirá após a confirmação no disco.'
+    ].join(' ');
+  }
+  return 'O projeto ativo já está disponível. Esta fase exige UMA ação real com uma das ferramentas habilitadas. Não peça upload manual de arquivos do projeto e não finalize em prosa. Responda somente com o JSON de chamada da ferramenta e aguarde o resultado real.';
+}
+
 export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
   constructor(options) {
     super(options);
@@ -278,7 +293,7 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
             ...(request.messages || []),
             {
               role: 'system',
-              content: 'O projeto ativo já está disponível. Esta fase exige UMA ação real com uma das ferramentas habilitadas. Não peça upload manual de arquivos do projeto e não finalize em prosa. Responda somente com o JSON de chamada da ferramenta e aguarde o resultado real.'
+              content: textToolInstruction(tools)
             }
           ]
         };
@@ -290,12 +305,13 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
       }
 
       if (required && !result.toolCalls?.length) {
+        const detail = result?.toolRecoveryRejected ? ` ${result.toolRecoveryRejected}` : '';
         const error = new ProviderError(
-          phase === 'verification'
+          (phase === 'verification'
             ? 'A rota não executou a verificação obrigatória do projeto.'
             : phase === 'mutation'
               ? 'A rota não executou a alteração obrigatória do projeto.'
-              : 'A rota não executou a ferramenta obrigatória para continuar a tarefa no projeto ativo.',
+              : 'A rota não executou a ferramenta obrigatória para continuar a tarefa no projeto ativo.') + detail,
           {
             providerId: this.id,
             category: 'model',
