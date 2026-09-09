@@ -47,6 +47,35 @@ function claimedCompletedFiles(content) {
   return claims;
 }
 
+function normalizedArtifactPath(value) {
+  return String(value || '').trim().replace(/^\.\//, '').toLowerCase();
+}
+
+function artifactCoverage(artifacts, mutationTargets) {
+  if (artifacts?.mode !== 'multi_file') return null;
+  const targets = [...mutationTargets];
+  const requiredFiles = (artifacts.requiredFiles || []).map(normalizedArtifactPath).filter(Boolean);
+  const requiredExtensions = (artifacts.requiredExtensions || [])
+    .map(extension => String(extension || '').trim().toLowerCase())
+    .filter(Boolean)
+    .map(extension => extension.startsWith('.') ? extension : `.${extension}`);
+  const missingFiles = requiredFiles.filter(file => !mutationTargets.has(file));
+  const missingExtensions = requiredExtensions.filter(extension => !targets.some(target => target.endsWith(extension)));
+  const minimumWrites = Math.max(1, Number(artifacts.minimumWrites || 1));
+  const missingCount = Math.max(0, minimumWrites - targets.length);
+  const passed = missingFiles.length === 0 && missingExtensions.length === 0 && missingCount === 0;
+  const problems = [];
+  if (missingFiles.length) problems.push(`arquivos ausentes: ${missingFiles.join(', ')}`);
+  if (missingExtensions.length) problems.push(`tipos ausentes: ${missingExtensions.join(', ')}`);
+  if (missingCount) problems.push(`faltam ${missingCount} arquivo(s) para o mínimo de ${minimumWrites}`);
+  return {
+    passed,
+    detail: passed
+      ? `${targets.length} artefato(s) confirmado(s): ${targets.join(', ')}.`
+      : `Entrega multi-arquivo incompleta — ${problems.join('; ')}.`
+  };
+}
+
 export function verifyTaskOutcome({ contract, response = {}, evidence = [], usage = {} } = {}) {
   const content = String(response.content || '').trim();
   const finishReason = String(response.finishReason || '').toLowerCase();
@@ -88,6 +117,15 @@ export function verifyTaskOutcome({ contract, response = {}, evidence = [], usag
         ? `${mutationFailures.length} tentativa(s) de alteração não foram confirmadas.`
         : 'Nenhuma ferramenta de escrita confirmou alteração.')
     ));
+    const coverage = artifactCoverage(contract?.artifacts, mutationTargets);
+    if (coverage) {
+      checks.push(check(
+        'artifact-set-complete',
+        'Conjunto completo de artefatos foi confirmado',
+        coverage.passed,
+        coverage.detail
+      ));
+    }
     checks.push(check(
       'mutation-claims-grounded',
       'Arquivos declarados como concluídos possuem evidência real',
