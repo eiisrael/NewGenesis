@@ -96,6 +96,13 @@ function extractOnlyFence(value) {
   return String(matches[0][1] || '').trim();
 }
 
+function codeFences(value) {
+  const text = String(value || '');
+  return [...text.matchAll(/```([a-z0-9_+.#-]*)\s*\n?([\s\S]*?)\n?```/gi)]
+    .map(match => ({ language: String(match[1] || '').toLowerCase(), content: String(match[2] || '').trim() }))
+    .filter(item => item.content);
+}
+
 function jsonObject(value) {
   try {
     const parsed = JSON.parse(String(value || '').trim());
@@ -118,17 +125,27 @@ function toolCall(name, args, recovery) {
   };
 }
 
+function validBatchFiles(value) {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 16
+    && value.every(file => file && typeof file === 'object' && !Array.isArray(file)
+      && typeof file.path === 'string' && file.path.trim()
+      && typeof file.content === 'string');
+}
+
 function argumentsFromJson(content, name) {
   const source = stripSingleFence(content);
   const parsed = jsonObject(source);
   if (!parsed) return null;
 
-  const declaredName = String(parsed.tool || parsed.name || parsed.function?.name || '').trim();
+  const declaredName = String(parsed.tool || parsed.command || parsed.name || parsed.function?.name || '').trim();
   if (declaredName && declaredName !== name) return null;
   const args = parsed.arguments ?? parsed.args ?? parsed.function?.arguments ?? parsed;
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
 
   if (name === 'write_project_file' && typeof args.path === 'string' && typeof args.content === 'string') return args;
+  if (name === 'write_project_files' && validBatchFiles(args.files)) return { files: args.files };
   if (name === 'create_project_directory' && typeof args.path === 'string') return { path: args.path };
   if (name === 'read_project_file' && typeof args.path === 'string') return args;
   if (name === 'search_project' && typeof args.query === 'string') return args;
@@ -190,6 +207,69 @@ function looksLikeFileContent(content, path) {
   return false;
 }
 
+function requestedArtifactExtensions(messages = []) {
+  const patterns = [
+    ['html', /(?:^|[^a-z0-9])(?:html|\.html)(?=$|[^a-z0-9])/i],
+    ['css', /(?:^|[^a-z0-9])(?:css|\.css)(?=$|[^a-z0-9])/i],
+    ['js', /(?:^|[^a-z0-9])(?:javascript|java script|js|\.js)(?=$|[^a-z0-9])/i],
+    ['ts', /(?:^|[^a-z0-9])(?:typescript|ts|\.ts)(?=$|[^a-z0-9])/i],
+    ['py', /(?:^|[^a-z0-9])(?:python|py|\.py)(?=$|[^a-z0-9])/i],
+    ['php', /(?:^|[^a-z0-9])(?:php|\.php)(?=$|[^a-z0-9])/i]
+  ];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role !== 'user') continue;
+    const text = textContent(messages[index].content).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const extensions = patterns.filter(([, pattern]) => pattern.test(text)).map(([extension]) => extension);
+    if (extensions.length) return extensions;
+  }
+  return [];
+}
+
+function defaultPathForExtension(extension) {
+  return {
+    html: 'index.html',
+    css: 'styles.css',
+    js: 'script.js',
+    ts: 'app.ts',
+    py: 'app.py',
+    php: 'index.php'
+  }[extension] || '';
+}
+
+function fenceExtension(fence) {
+  const language = String(fence?.language || '').toLowerCase();
+  if (['html', 'htm'].includes(language) || looksLikeHtml(fence?.content)) return 'html';
+  if (language === 'css' || looksLikeCss(fence?.content)) return 'css';
+  if (['javascript', 'js', 'mjs', 'cjs'].includes(language) || looksLikeScript(fence?.content)) return 'js';
+  if (['typescript', 'ts'].includes(language)) return 'ts';
+  if (['python', 'py'].includes(language) || looksLikePython(fence?.content)) return 'py';
+  if (language === 'php' || looksLikePhp(fence?.content)) return 'php';
+  return '';
+}
+
+function recoveredBatchWriteCall(content, messages) {
+  const fences = codeFences(content);
+  if (!fences.length) return null;
+  const requested = requestedArtifactExtensions(messages);
+  const byExtension = new Map();
+  for (const fence of fences) {
+    const extension = fenceExtension(fence);
+    if (!extension || byExtension.has(extension)) continue;
+    const path = defaultPathForExtension(extension);
+    if (!path || !looksLikeFileContent(fence.content, path)) continue;
+    byExtension.set(extension, fence.content);
+  }
+
+  const extensions = requested.length ? requested : [...byExtension.keys()];
+  if (!extensions.length || extensions.some(extension => !byExtension.has(extension))) return null;
+  const files = extensions.map(extension => ({
+    path: defaultPathForExtension(extension),
+    content: byExtension.get(extension)
+  })).filter(file => file.path && file.content);
+  if (!files.length) return null;
+  return toolCall('write_project_files', { files }, 'multi-fence-service-files');
+}
+
 function recoveredWriteCall(content, messages) {
   const path = inferProjectTargetPath(messages);
   if (!path) return null;
@@ -233,6 +313,19 @@ export function recoverRequiredProjectToolCall({ result, tools = [], messages = 
         toolCalls: [toolCall(name, { path }, 'deterministic-directory-path')],
         finishReason: 'tool_calls',
         toolRecovery: 'deterministic-directory-path'
+      };
+    }
+  }
+
+  if (name === 'write_project_files') {
+    const recovered = recoveredBatchWriteCall(result?.content, messages);
+    if (recovered) {
+      return {
+        ...result,
+        content: '',
+        toolCalls: [recovered],
+        finishReason: 'tool_calls',
+        toolRecovery: recovered.genesisRecovery
       };
     }
   }
