@@ -196,6 +196,54 @@ function withRecoveredCall(result, call, recovery) {
   };
 }
 
+function webFenceFiles(content) {
+  const files = new Map();
+  const labels = new Map([
+    ['html', ['html', 'index.html']],
+    ['htm', ['html', 'index.html']],
+    ['css', ['css', 'styles.css']],
+    ['javascript', ['js', 'script.js']],
+    ['js', ['js', 'script.js']],
+    ['mjs', ['js', 'script.js']],
+    ['cjs', ['js', 'script.js']]
+  ]);
+  for (const match of String(content || '').matchAll(/```([a-z0-9_+.#-]*)\s*\n?([\s\S]*?)\n?```/gi)) {
+    const spec = labels.get(String(match[1] || '').trim().toLowerCase());
+    const body = String(match[2] || '').trim();
+    if (!spec || !body || files.has(spec[0])) continue;
+    files.set(spec[0], { path: spec[1], content: body });
+  }
+  if (!files.size && /<!doctype\s+html|<html\b|<body\b/i.test(String(content || ''))) {
+    files.set('html', { path: 'index.html', content: stripFence(content) });
+  }
+  return files;
+}
+
+function recoverWebBundle(result, messages, allowed) {
+  const required = requiredWebBundleExtensions(messages);
+  if (!required.length || !allowed.has('write_project_files')) return null;
+  const found = webFenceFiles(result?.content);
+  if (!found.size) return null;
+  const missing = required.filter(extension => !found.has(extension));
+  if (missing.length) return rejectedIncompleteBatch(result, missing);
+  const files = required.map(extension => found.get(extension));
+  const malformed = malformedBatchFiles(files);
+  if (malformed.length) {
+    return {
+      ...result,
+      toolCalls: [],
+      finishReason: 'stop',
+      toolRecovery: 'rejected-collapsed-newlines',
+      toolRecoveryRejected: `Conteúdo inválido em ${malformed.join(', ')}: as quebras de linha parecem ter sido convertidas em caracteres “n”. Gere novamente com quebras de linha reais.`
+    };
+  }
+  return withRecoveredCall(
+    result,
+    recoveredToolCall('write_project_files', { files }, 'complete-web-bundle-fences'),
+    'complete-web-bundle-fences'
+  );
+}
+
 export function recoverRequiredProjectToolCall({ result, tools = [], messages = [] } = {}) {
   if (result?.toolCalls?.length) return validateRecoveredBatch(result, messages);
 
@@ -244,5 +292,7 @@ export function recoverRequiredProjectToolCall({ result, tools = [], messages = 
     }
   }
 
+  const webBundle = recoverWebBundle(result, messages, allowed);
+  if (webBundle) return webBundle;
   return validateRecoveredBatch(recoverSingleToolCall({ result, tools, messages }), messages);
 }
