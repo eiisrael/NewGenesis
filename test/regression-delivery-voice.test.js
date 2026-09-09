@@ -39,7 +39,7 @@ test('página web comum exige HTML, CSS e JavaScript na mesma entrega', () => {
   assert.equal(contract.artifacts.webBundle, true);
   assert.deepEqual(contract.artifacts.requiredExtensions.sort(), ['.css', '.html', '.js']);
   assert.equal(contract.artifacts.minimumWrites, 3);
-  assert.equal(contract.requestBudget.limit, 2);
+  assert.equal(contract.requestBudget.limit, 1);
 });
 
 test('pedido explicitamente single-file não força CSS/JS externos', () => {
