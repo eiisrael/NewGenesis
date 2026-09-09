@@ -154,7 +154,7 @@ test('criação simples faz uma inferência, grava e finaliza com relatório loc
   assert.equal(result.usage.requestCount, 1);
 });
 
-test('serviço multi-arquivo para após gravação confirmada e não estoura orçamento repetindo a mutação', async () => {
+test('serviço multi-arquivo finaliza localmente logo após gravação confirmada', async () => {
   let generateCalls = 0;
   let toolCalls = 0;
   const files = [
@@ -187,36 +187,24 @@ test('serviço multi-arquivo para após gravação confirmada e não estoura or�
     },
     async generate({ tools }) {
       generateCalls += 1;
-      if (generateCalls === 1) {
-        assert.deepEqual(tools.map(item => item.function.name), ['write_project_files']);
-        return {
-          content: '',
-          finishReason: 'tool_calls',
-          toolCalls: [{
-            id: 'call-batch-write',
-            type: 'function',
-            function: {
-              name: 'write_project_files',
-              arguments: JSON.stringify({ files })
-            }
-          }],
-          model: 'fake:free',
-          resolvedModel: 'fake:free',
-          resolvedProvider: 'Fake Free',
-          latencyMs: 5,
-          usage: { inputTokens: 40, outputTokens: 60, totalTokens: 100, requestCount: 1 }
-        };
-      }
-      assert.deepEqual(tools, []);
+      assert.equal(generateCalls, 1, 'não deve existir uma requisição remota só para dizer que terminou');
+      assert.deepEqual(tools.map(item => item.function.name), ['write_project_files']);
       return {
-        content: 'Arquivos criados e confirmados no projeto.',
-        finishReason: 'stop',
-        toolCalls: [],
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [{
+          id: 'call-batch-write',
+          type: 'function',
+          function: {
+            name: 'write_project_files',
+            arguments: JSON.stringify({ files })
+          }
+        }],
         model: 'fake:free',
         resolvedModel: 'fake:free',
         resolvedProvider: 'Fake Free',
-        latencyMs: 4,
-        usage: { inputTokens: 30, outputTokens: 15, totalTokens: 45, requestCount: 1 }
+        latencyMs: 5,
+        usage: { inputTokens: 40, outputTokens: 60, totalTokens: 100, requestCount: 1 }
       };
     },
     markSuccess() {}
@@ -235,7 +223,7 @@ test('serviço multi-arquivo para após gravação confirmada e não estoura or�
     project: { id: 'project', name: 'Teste', fileCount: 0, writable: true }
   });
   assert.equal(taskContract.toolPolicy.mutationIntent, 'create_project');
-  assert.equal(taskContract.requestBudget.limit, 3);
+  assert.equal(taskContract.requestBudget.limit, 1);
 
   const orchestrator = new GenesisOrchestrator({
     providers: [provider],
@@ -265,9 +253,11 @@ test('serviço multi-arquivo para após gravação confirmada e não estoura or�
   });
 
   assert.equal(toolCalls, 1);
-  assert.equal(generateCalls, 2);
+  assert.equal(generateCalls, 1);
   assert.equal(result.verification.status, 'partial');
-  assert.equal(result.usage.requestCount, 2);
-  assert.match(result.content, /confirmados/i);
+  assert.equal(result.usage.requestCount, 1);
+  assert.match(result.content, /Alterações realizadas/);
+  assert.match(result.content, /3 arquivo\(s\) gravado\(s\) e confirmado\(s\)/i);
+  assert.match(result.content, /pronto para validação visual/i);
   assert.doesNotMatch(result.content, /orçamento seguro/i);
 });
