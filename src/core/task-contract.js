@@ -18,6 +18,7 @@ const PORTUGUESE_ACTION = /(?:criar|adicionar|alterar|atualizar|corrigir|consert
 const PORTUGUESE_ACTION_NOUN = /(?:correc(?:ao|oes)|ajustes?|alteracoes?|mudancas?|implementacao|refatoracao|otimizacao|melhorias?|migracao|fix)/;
 const DO_ACTION = new RegExp(`^\\s*(?:por favor[, ]+)?faca\\s+(?:(?:os?|as?|uma?)\\s+)?${PORTUGUESE_ACTION_NOUN.source}\\b`);
 const FOLLOW_UP_DO_ACTION = new RegExp(`(?:[.!?;,]\\s*|\\b(?:e|depois|entao|tambem)\\s+)(?:por favor\\s+)?faca\\s+(?:(?:os?|as?|uma?)\\s+)?${PORTUGUESE_ACTION_NOUN.source}\\b`);
+const GENERIC_BUILD_ACTION = /\b(?:faca|fazer|monte|montar|desenvolva|desenvolver|construa|construir)\b[^.!?\n]{0,120}\b(?:pagina|site|app|aplicacao|interface|landing page|dashboard|jogo|game)\b/;
 const ENGLISH_ACTION = /(?:fix|create|update|change|implement|remove|delete|move|rename|edit|write|improve|optimize|refactor|organize|simplify|modernize|migrate)/;
 const ACTION_VERB = new RegExp(`(?:${PORTUGUESE_ACTION.source}|${ENGLISH_ACTION.source})`);
 const ACTION_LEAD = new RegExp(`^(?:por favor[, ]+)?(?:${ACTION_VERB.source})\\b|\\b(?:quero|preciso|pode|poderia|deve|vamos|favor|need you to|want you to|can you|could you|please)\\s+(?:${ACTION_VERB.source})\\b`);
@@ -50,7 +51,11 @@ function outputFormat(text) {
 function requestsMutation(text) {
   if (ANALYSIS.test(text) && (FOLLOW_UP_ACTION.test(text) || FOLLOW_UP_DO_ACTION.test(text) || FOLLOW_UP_PROJECT_CONTENT_ACTION.test(text))) return true;
   if (READ_ONLY_LEAD.test(text)) return false;
-  return PORTUGUESE_IMPERATIVE.test(text) || ACTION_LEAD.test(text) || DO_ACTION.test(text) || PROJECT_CONTENT_ACTION.test(text);
+  return PORTUGUESE_IMPERATIVE.test(text)
+    || ACTION_LEAD.test(text)
+    || DO_ACTION.test(text)
+    || GENERIC_BUILD_ACTION.test(text)
+    || PROJECT_CONTENT_ACTION.test(text);
 }
 
 function requestsDeletion(text) {
@@ -98,8 +103,6 @@ function toolPolicyFor(kind, text, complexity = 'low') {
   if (['change', 'fix'].includes(kind)) {
     const mutationIntent = projectMutationIntent(text);
 
-    // Criações explícitas não precisam pesquisar um conteúdo que ainda não existe.
-    // Expor uma única ferramenta também torna a execução determinística e econômica.
     if (mutationIntent === 'create_file') {
       return {
         strategy: 'direct_mutation',
@@ -141,8 +144,6 @@ function toolPolicyFor(kind, text, complexity = 'low') {
     if (requestsDeletion(text)) allowed.push('delete_project_path');
     const explorationBatches = complexity === 'high' ? 4 : complexity === 'medium' ? 3 : 2;
     return {
-      // Nome preservado por compatibilidade com integrações antigas; o comportamento
-      // agora é agentic, sequencial, search-first e com escrita obrigatória.
       strategy: 'bounded_agent',
       mutationIntent,
       allowed,
@@ -211,14 +212,10 @@ function requestPolicy(kind, complexity, mutationIntent = 'edit') {
         : { limit: 1, inputTokenLimit: 16_000, maxRequestInputTokens: 12_000, reserveFinal: 0, deadlineMs: 45_000 };
     }
 
-    // Edições comuns precisam ser econômicas: busca -> contexto mínimo -> escrita ->
-    // verificação -> síntese. Só tarefas realmente amplas ganham orçamento de 14.
     const limit = complexity === 'high' ? 14 : 6;
     const inputTokenLimit = complexity === 'high' ? 144_000 : 72_000;
     const maxRequestInputTokens = complexity === 'high' ? 16_000 : 14_000;
     const deadlineMs = complexity === 'high' ? 240_000 : 180_000;
-    // O orquestrador ignora esta reserva enquanto nenhuma mutação aconteceu; depois
-    // da escrita, uma chamada fica protegida para a síntese final.
     return { limit, inputTokenLimit, maxRequestInputTokens, reserveFinal: 1, deadlineMs };
   }
   if (['analysis', 'diagnose'].includes(kind)) {
