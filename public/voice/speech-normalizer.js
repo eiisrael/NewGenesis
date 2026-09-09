@@ -19,7 +19,10 @@ export function normalizeVoiceTranscript(value) {
 
 export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   let text = String(value || '').replace(/\r\n?/g, '\n');
-  text = text.replace(/```[\s\S]*?```/g, `\n${CODE_NOTICE}\n`);
+  // Em streaming o fechamento de ``` pode ainda não ter chegado. Consumir até o
+  // fim atual evita que comentários, JavaScript ou HTML internos escapem para o TTS.
+  text = text.replace(/```[a-z0-9_+.#-]*\s*\n?[\s\S]*?(?:```|$)/gi, `\n${CODE_NOTICE}\n`);
+  text = stripRawTechnicalLines(text);
   text = text.replace(/(?:^|\n)(?:\|[^\n]+\|\n)(?:\|?\s*:?-{3,}[^\n]*\n)(?:\|[^\n]+\|(?:\n|$))+/gm, `\n${TABLE_NOTICE}\n`);
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, label) => label ? `Imagem: ${label}.` : 'Há uma imagem na resposta.');
   text = text.replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/g, '$1');
@@ -81,6 +84,39 @@ export function takeStableSentences(value, { flush = false, maxChunk = 260 } = {
   }
   if (current) chunks.push(current);
   return { chunks, rest };
+}
+
+function stripRawTechnicalLines(value) {
+  const lines = String(value || '').split('\n');
+  const output = [];
+  let technicalRun = false;
+  for (const line of lines) {
+    if (looksLikeTechnicalLine(line)) {
+      if (!technicalRun) output.push(CODE_NOTICE);
+      technicalRun = true;
+      continue;
+    }
+    technicalRun = false;
+    output.push(line);
+  }
+  return output.join('\n');
+}
+
+function looksLikeTechnicalLine(value) {
+  const line = String(value || '').trim();
+  if (!line) return false;
+  if (/^\/\//.test(line) || /^\/\*/.test(line) || /^\*/.test(line) || /^#!\//.test(line)) return true;
+  if (/^\s*[{}\[\],]+\s*$/.test(line)) return true;
+  if (/^\s*["']?(?:tool|command|arguments|result|path|content)["']?\s*:/i.test(line)) return true;
+  if (/^\s*\{?.*["'](?:tool|command|arguments)["']\s*:/i.test(line)) return true;
+  if (/<\/?[a-z][^>]*>/i.test(line)) return true;
+  if (/\b(?:document|window|navigator|console)\.[a-z_$][\w$]*\b/i.test(line)) return true;
+  if (/\b(?:querySelector|addEventListener|classList|textContent|innerHTML|createElement)\s*\(/i.test(line)) return true;
+  if (/^\s*(?:const|let|var|function|class|import|export|async\s+function|return\b|if\s*\(|for\s*\(|while\s*\()/i.test(line)) return true;
+  if (/=>|\{\s*$|;\s*$/.test(line) && /[=(){};]|\.[a-z_$][\w$]*\s*\(/i.test(line)) return true;
+  if (/^\s*[.#][a-z0-9_-]+[^\n{]*\{/i.test(line)) return true;
+  if (/^\s*[a-z-]+\s*:\s*[^;]+;\s*$/i.test(line)) return true;
+  return false;
 }
 
 function isAbbreviation(value) {
