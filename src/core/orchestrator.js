@@ -7,7 +7,7 @@ import { verifyTaskOutcome } from './task-verifier.js';
 import { preferredProjectMutationTools } from './project-tool-policy.js';
 
 const MUTATION_TOOL_NAMES = new Set([
-  'write_project_file', 'replace_project_text', 'create_project_directory',
+  'write_project_file', 'write_project_files', 'replace_project_text', 'create_project_directory',
   'move_project_path', 'delete_project_path'
 ]);
 
