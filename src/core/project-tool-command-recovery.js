@@ -21,6 +21,67 @@ const TOOL_ALIASES = Object.freeze({
   run_project_check: 'run_project_check'
 });
 
+const STATIC_WEB_SERVICE = /\b(?:pagina|site|landing page|dashboard)\b/;
+const SINGLE_FILE_WEB_REQUEST = /\b(?:arquivo unico|single file|somente um arquivo|apenas um arquivo|html unico|tudo (?:em|no) index\.html|somente index\.html|apenas index\.html)\b/;
+const WEB_BUNDLE_EXTENSIONS = Object.freeze(['html', 'css', 'js']);
+
+function textContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map(part => part?.text || '').join('');
+  return '';
+}
+
+function normalizedText(value) {
+  return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function latestUserText(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') return normalizedText(textContent(messages[index].content));
+  }
+  return '';
+}
+
+function requiredWebBundleExtensions(messages = []) {
+  const text = latestUserText(messages);
+  return STATIC_WEB_SERVICE.test(text) && !SINGLE_FILE_WEB_REQUEST.test(text)
+    ? WEB_BUNDLE_EXTENSIONS
+    : [];
+}
+
+function extensionForPath(value) {
+  const leaf = String(value || '').trim().toLowerCase().replace(/\\/g, '/').split('/').pop() || '';
+  const dot = leaf.lastIndexOf('.');
+  return dot >= 0 ? leaf.slice(dot + 1) : '';
+}
+
+function missingRequiredBatchExtensions(files, messages) {
+  const required = requiredWebBundleExtensions(messages);
+  if (!required.length) return [];
+  const present = new Set((Array.isArray(files) ? files : []).map(file => extensionForPath(file?.path)).filter(Boolean));
+  return required.filter(extension => !present.has(extension));
+}
+
+function rejectedIncompleteBatch(result, missing) {
+  return {
+    ...result,
+    toolCalls: [],
+    finishReason: 'stop',
+    toolRecovery: 'rejected-incomplete-web-bundle',
+    toolRecoveryRejected: `Entrega web incompleta: faltam ${missing.map(extension => `.${extension}`).join(', ')}. Gere HTML, CSS e JavaScript juntos na mesma operação.`
+  };
+}
+
+function validateRecoveredBatch(result, messages) {
+  const calls = result?.toolCalls || [];
+  const batchCall = calls.find(call => call?.function?.name === 'write_project_files');
+  if (!batchCall) return result;
+  let args = null;
+  try { args = JSON.parse(String(batchCall.function.arguments || '{}')); } catch { args = null; }
+  const missing = missingRequiredBatchExtensions(args?.files, messages);
+  return missing.length ? rejectedIncompleteBatch(result, missing) : result;
+}
+
 function stripFence(value) {
   const text = String(value || '').trim();
   const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -136,7 +197,7 @@ function withRecoveredCall(result, call, recovery) {
 }
 
 export function recoverRequiredProjectToolCall({ result, tools = [], messages = [] } = {}) {
-  if (result?.toolCalls?.length) return result;
+  if (result?.toolCalls?.length) return validateRecoveredBatch(result, messages);
 
   const allowed = new Set(tools.map(toolName).filter(Boolean));
   const invocation = invocationFromContent(result?.content);
@@ -154,6 +215,8 @@ export function recoverRequiredProjectToolCall({ result, tools = [], messages = 
           toolRecoveryRejected: `Conteúdo inválido em ${malformed.join(', ')}: as quebras de linha parecem ter sido convertidas em caracteres “n”. Gere novamente com quebras de linha reais.`
         };
       }
+      const missing = missingRequiredBatchExtensions(args.files, messages);
+      if (missing.length) return rejectedIncompleteBatch(result, missing);
     }
 
     // Alguns modelos gratuitos representam "escrever em arquivo vazio" como
@@ -181,5 +244,5 @@ export function recoverRequiredProjectToolCall({ result, tools = [], messages = 
     }
   }
 
-  return recoverSingleToolCall({ result, tools, messages });
+  return validateRecoveredBatch(recoverSingleToolCall({ result, tools, messages }), messages);
 }
