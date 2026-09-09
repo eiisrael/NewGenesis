@@ -309,7 +309,9 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
         };
       }
 
-      let result = await super.generate(request);
+      let result = serviceTextProtocol
+        ? await OpenAICompatibleProvider.prototype.generate.call(this, request)
+        : await super.generate(request);
       if (required && !result.toolCalls?.length) {
         result = recoverRequiredProjectToolCall({ result, tools, messages: request.messages || [] });
       }
