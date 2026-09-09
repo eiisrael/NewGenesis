@@ -12,6 +12,8 @@ const SPECIAL_FILE_NAMES = new Set([
   'dockerfile', 'makefile', 'procfile', 'license', 'readme', 'changelog',
   '.gitignore', '.dockerignore', '.env', '.npmrc', '.editorconfig'
 ]);
+const STATIC_WEB_SERVICE = /\b(?:pagina|site|landing page|dashboard)\b/;
+const SINGLE_FILE_WEB_REQUEST = /\b(?:arquivo unico|single file|somente um arquivo|apenas um arquivo|html unico|tudo (?:em|no) index\.html|somente index\.html|apenas index\.html)\b/;
 
 function validRelativePath(candidate) {
   const value = normalizePath(candidate);
@@ -218,8 +220,19 @@ function requestedArtifactExtensions(messages = []) {
   ];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.role !== 'user') continue;
-    const text = textContent(messages[index].content).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const raw = textContent(messages[index].content);
+    const text = raw.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     const extensions = patterns.filter(([, pattern]) => pattern.test(text)).map(([extension]) => extension);
+    if (STATIC_WEB_SERVICE.test(text)) {
+      if (SINGLE_FILE_WEB_REQUEST.test(text)) {
+        const explicit = filePathCandidates(raw)
+          .map(candidate => candidate.toLowerCase().split('/').pop() || '')
+          .map(leaf => leaf.includes('.') ? leaf.split('.').pop() : '')
+          .filter(extension => patterns.some(([known]) => known === extension));
+        return [...new Set(explicit.length ? explicit : ['html'])];
+      }
+      return [...new Set(['html', 'css', 'js', ...extensions])];
+    }
     if (extensions.length) return extensions;
   }
   return [];
