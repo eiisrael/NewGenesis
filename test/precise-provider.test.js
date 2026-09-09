@@ -128,7 +128,7 @@ test('se modelo gratuito devolver HTML bruto, Genesis recupera a escrita em vez 
   assert.equal(result.toolRecovery, 'raw-file-content');
 });
 
-test('serviço multi-arquivo evita tool calling nativo mesmo em modelo que anuncia tools', async t => {
+test('serviço multi-arquivo evita tool calling nativo e exige fallbacks seguros para páginas locais', async t => {
   const provider = createProvider();
   const originalFetch = globalThis.fetch;
   let requestBody = null;
@@ -185,8 +185,13 @@ test('serviço multi-arquivo evita tool calling nativo mesmo em modelo que anunc
 
   assert.equal(requestBody.tools, undefined);
   assert.equal(requestBody.tool_choice, undefined);
-  assert.match(JSON.stringify(requestBody.messages), /bloco Markdown completo/i);
-  assert.match(JSON.stringify(requestBody.messages), /NÃO coloque HTML\/CSS\/JS dentro de strings JSON/i);
+  const serializedMessages = JSON.stringify(requestBody.messages);
+  assert.match(serializedMessages, /bloco Markdown completo/i);
+  assert.match(serializedMessages, /NÃO coloque HTML\/CSS\/JS dentro de strings JSON/i);
+  assert.match(serializedMessages, /file:\/\//i);
+  assert.match(serializedMessages, /navigator\.share/i);
+  assert.match(serializedMessages, /navigator\.clipboard/i);
+  assert.match(serializedMessages, /Todo botão visível deve possuir um handler funcional/i);
   assert.equal(result.toolCalls.length, 1);
   assert.equal(result.toolCalls[0].function.name, 'write_project_files');
   assert.equal(result.toolRecovery, 'multi-fence-service-files');
