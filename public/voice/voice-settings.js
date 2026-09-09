@@ -33,7 +33,13 @@ export function sanitizeVoiceSettings(value = {}) {
   }
   result.ttsVoice = ['pf_dora', 'pm_alex', 'pm_santa'].includes(value.ttsVoice) ? value.ttsVoice : DEFAULT_VOICE_SETTINGS.ttsVoice;
   result.rate = clamp(value.rate, 0.7, 1.6, 1);
-  result.vadThreshold = clamp(value.vadThreshold, 0.006, 0.08, DEFAULT_VOICE_SETTINGS.vadThreshold);
+  const storedVadThreshold = Number(value.vadThreshold);
+  // 0.018 era o padrão da versão anterior e ficou persistido no localStorage.
+  // Migrá-lo evita que usuários existentes continuem presos ao limiar antigo mesmo
+  // depois da correção do VAD. Valores realmente personalizados são preservados.
+  result.vadThreshold = Number.isFinite(storedVadThreshold) && Math.abs(storedVadThreshold - 0.018) < 0.000001
+    ? DEFAULT_VOICE_SETTINGS.vadThreshold
+    : clamp(value.vadThreshold, 0.006, 0.08, DEFAULT_VOICE_SETTINGS.vadThreshold);
   result.vadSilenceMs = clamp(value.vadSilenceMs, 300, 1600, DEFAULT_VOICE_SETTINGS.vadSilenceMs);
   return result;
 }
