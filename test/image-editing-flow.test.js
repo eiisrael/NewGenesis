@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { AttachmentStore } from '../src/attachments.js';
 import { classifyImageRequest, parseImageGenerationRequest } from '../src/core/image-request.js';
+import { fallbackImagePlan } from '../src/core/image-intelligence.js';
 import { OpenAICompatibleProvider } from '../src/providers/openai-compatible-provider.js';
 import { AIHordeImageProvider } from '../src/providers/ai-horde-image-provider.js';
 
@@ -54,6 +55,43 @@ test('análise de imagem não é confundida com edição', () => {
   assert.equal(classifyImageRequest('Analise esta imagem e descreva o que aparece', { currentImages: 1 }), null);
   assert.equal(classifyImageRequest('Crie uma imagem de uma cidade futurista'), 'create');
   assert.equal(classifyImageRequest('Troque a cor da roupa para azul', { currentImages: 1 }), 'edit');
+});
+
+test('pedido novo e tarefa textual não reaproveitam uma imagem anterior por engano', () => {
+  assert.equal(classifyImageRequest('Agora crie uma imagem de uma cidade futurista', { recentImages: 1 }), 'create');
+  assert.equal(classifyImageRequest('Melhore meu texto e mude o assunto', { recentImages: 1 }), null);
+  assert.equal(classifyImageRequest('Agora explique como usar bluetooth', { recentImages: 1 }), null);
+  assert.equal(classifyImageRequest('Crie outra versão dessa imagem', { recentImages: 1 }), 'edit');
+  assert.equal(classifyImageRequest('Qual a cor do céu?', { recentImages: 1 }), null);
+  assert.equal(classifyImageRequest('Essa imagem é bonita?', { recentImages: 1 }), null);
+  assert.equal(classifyImageRequest('Adicione o texto "Genesis" no topo', { recentImages: 1 }), 'edit');
+});
+
+test('memória visual preserva estilo e proporção apenas na continuação da imagem', async t => {
+  const store = await tempStore(t);
+  const [image] = await store.saveMany('visual-memory', [{ name: 'anime.png', mimeType: 'image/png', dataUrl: PNG_DATA_URL }]);
+  const messages = [
+    { id: 'a1', role: 'assistant', content: 'Imagem criada.', attachments: [image], meta: {
+      imageContext: { originalPrompt: 'Um gato anime em 16:9', style: 'anime', aspectRatio: '16:9' }
+    } },
+    { id: 'u2', role: 'user', content: 'Troque apenas o fundo para azul', attachments: [] }
+  ];
+  const hydrated = await store.hydrateConversation({ id: 'visual-memory', messages });
+  const request = parseImageGenerationRequest(hydrated.messages[1].content);
+  const plan = fallbackImagePlan(request);
+  assert.equal(plan.style, 'anime');
+  assert.equal(plan.aspectRatio, '16:9');
+  assert.match(plan.prompt, /Preserve the identity/);
+  assert.equal(messages[1].content, 'Troque apenas o fundo para azul');
+
+  const unrelated = await store.hydrateConversation({ id: 'visual-memory', messages: [
+    messages[0],
+    { id: 'u3', role: 'user', content: 'Explique funções JavaScript', attachments: [] },
+    { id: 'a3', role: 'assistant', content: 'Uma função encapsula uma operação.', attachments: [] },
+    messages[1]
+  ] });
+  assert.equal(parseImageGenerationRequest(unrelated.messages.at(-1).content).operation, 'create');
+  assert.equal(unrelated.messages.at(-1).meta?.imageEditPrepared, undefined);
 });
 
 test('OpenRouter envia input_references somente para modelo free compatível', async t => {

@@ -241,9 +241,8 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
         if (input.signal?.aborted || error?.code === 'request_cancelled') throw error;
         lastError = error;
         const category = error?.category || 'unknown';
-        const retryableCategory = ['timeout', 'availability', 'unknown'].includes(category)
-          || (category === 'quota' && input.candidate.model === 'openrouter/free');
-        if (error?.retryable === false || !retryableCategory || attempt === attempts - 1) break;
+        const retryableCategory = ['timeout', 'availability', 'unknown'].includes(category);
+        if (error?.retryable === false || error?.retryAfterMs > 0 || !retryableCategory || attempt === attempts - 1) break;
         await wait(attempt === 0 ? 300 : 800, input.signal);
       }
     }

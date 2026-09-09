@@ -460,7 +460,7 @@ export class GenesisOrchestrator {
     const attachments = latestUserMessage?.attachments || [];
     const imageGeneration = wantsImageGeneration(query) && !attachments.length;
     const intent = classifyIntent(query);
-    normalizedMode = automaticMode(normalizedMode, intent, query);
+    if (!imageGeneration) normalizedMode = automaticMode(normalizedMode, intent, query);
     const intentBudget = getIntentBudget(intent);
     const intentLabel = getIntentLabel(intent);
     if (_recoveryRound === 0 && taskContract) onEvent('task_contract', { task: taskContract });
@@ -469,7 +469,7 @@ export class GenesisOrchestrator {
     }
     const requirements = {
       image: attachments.some(attachment => attachment.kind === 'image'),
-      tools: tools.length > 0 && Boolean(toolExecutor)
+      tools: !imageGeneration && tools.length > 0 && Boolean(toolExecutor)
     };
     const configuredRequestLimit = requirements.tools ? this.maxToolRequests : this.maxInferenceRequests;
     const contractRequestLimit = Number(taskContract?.requestBudget?.limit || 0);
@@ -529,6 +529,12 @@ export class GenesisOrchestrator {
         try {
         const result = await provider.generateImage({
           prompt: query,
+          conversation,
+          userMemoryContext,
+          mode: normalizedMode,
+          requestBudget,
+          usageLedger,
+          deadlineAt,
           signal,
           onAttempt: (model, attempt) => onEvent('image_attempt', {
             providerId: provider.id,
@@ -576,6 +582,11 @@ export class GenesisOrchestrator {
             error.task ||= taskContract;
             throw error;
           }
+          if (error?.category === 'budget' || error?.code === 'task_deadline_exceeded') {
+            error.usage ||= finalUsage(usageLedger, requestBudget);
+            error.task ||= taskContract;
+            throw error;
+          }
           const attempts = error.attempts?.length
             ? error.attempts.map(attempt => ({ providerId: provider.id, provider: provider.name, ...attempt }))
             : [{ providerId: provider.id, provider: provider.name, error: safeError(error) }];
@@ -589,7 +600,10 @@ export class GenesisOrchestrator {
           });
         }
       }
-      throw new GenesisUnavailableError('Nenhuma rota remota gratuita conseguiu gerar a imagem neste momento.', imageAttempts);
+      const error = new GenesisUnavailableError('Nenhuma rota remota gratuita conseguiu gerar a imagem neste momento.', imageAttempts);
+      error.usage = finalUsage(usageLedger, requestBudget);
+      error.task = taskContract;
+      throw error;
     }
 
     assertWithinDeadline();

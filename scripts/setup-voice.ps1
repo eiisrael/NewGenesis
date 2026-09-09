@@ -18,6 +18,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VoiceDir = Join-Path $ProjectRoot '.genesis\voice'
 $ModelDir = Join-Path $VoiceDir 'models\whisper'
 $BinDir = Join-Path $VoiceDir 'bin'
+. (Join-Path $PSScriptRoot 'voice\python-runtime.ps1')
 
 $WhisperProfiles = @{
   rapid = @{ File = 'ggml-base-q5_1.bin'; Bytes = 59707625; Sha256 = '422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898' }
@@ -30,6 +31,22 @@ function Assert-VoiceTarget {
   $resolvedVoice = [IO.Path]::GetFullPath($VoiceDir)
   if (-not $resolvedVoice.StartsWith($resolvedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolvedVoice -Leaf) -ne 'voice') {
     throw "Diretório de voz inseguro: $resolvedVoice"
+  }
+  Assert-VoicePath $resolvedVoice
+}
+
+function Assert-VoicePath([string]$Target) {
+  $resolvedVoice = [IO.Path]::GetFullPath($VoiceDir)
+  $resolvedTarget = [IO.Path]::GetFullPath($Target)
+  if ($resolvedTarget -ne $resolvedVoice -and -not $resolvedTarget.StartsWith($resolvedVoice + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Alvo fora do diretório de voz: $resolvedTarget"
+  }
+  $ancestor = $resolvedTarget
+  while ($ancestor -and $ancestor -ne [IO.Path]::GetFullPath($ProjectRoot)) {
+    if (Test-Path -LiteralPath $ancestor) {
+      if ((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Link de diretório não permitido no alvo de voz: $ancestor" }
+    }
+    $ancestor = Split-Path -Parent $ancestor
   }
 }
 
@@ -53,21 +70,21 @@ function Find-Python([string[]]$Versions) {
   if ($PythonExecutable) {
     $explicit = [IO.Path]::GetFullPath($PythonExecutable)
     if (-not (Test-Path -LiteralPath $explicit -PathType Leaf)) { throw "Python explícito não encontrado: $explicit" }
-    $detected = (& $explicit -c 'import sys;print(sys.version_info[0],sys.version_info[1],sep=chr(46))' 2>$null | Select-Object -Last 1).Trim()
-    if ($LASTEXITCODE -eq 0 -and $detected -in $accepted) { return @{ Command = $explicit; Prefix = @() } }
-    throw "Python explícito incompatível ($detected). Versões aceitas: $($accepted -join ', ')."
+    $info = Get-VoicePythonInfo $explicit
+    if ($info.Available -and $info.Version -in $accepted) { return @{ Command = $explicit; Prefix = @() } }
+    throw "Python explícito indisponível ou incompatível ($($info.Version)). $($info.Error) Versões aceitas: $($accepted -join ', ')."
   }
   $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
   if ($launcher) {
     foreach ($version in $Versions) {
-      & $launcher.Source $version -c 'import sys' 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) { return @{ Command = $launcher.Source; Prefix = @($version) } }
+      $info = Get-VoicePythonInfo $launcher.Source @($version)
+      if ($info.Available -and $info.Version -in $accepted) { return @{ Command = $launcher.Source; Prefix = @($version) } }
     }
   }
   $python = Get-Command python.exe -ErrorAction SilentlyContinue
   if ($python) {
-    $detected = (& $python.Source -c 'import sys;print(sys.version_info[0],sys.version_info[1],sep=chr(46))' 2>$null | Select-Object -Last 1).Trim()
-    if ($LASTEXITCODE -eq 0 -and $detected -in $accepted) { return @{ Command = $python.Source; Prefix = @() } }
+    $info = Get-VoicePythonInfo $python.Source
+    if ($info.Available -and $info.Version -in $accepted) { return @{ Command = $python.Source; Prefix = @() } }
   }
   throw "Nenhum Python compatível foi encontrado. Versões aceitas para este componente: $($accepted -join ', ')."
 }
@@ -75,13 +92,40 @@ function Find-Python([string[]]$Versions) {
 function Ensure-Venv([ValidateSet('piper', 'kokoro', 'chatterbox')][string]$Kind) {
   $venvDir = Join-Path $VoiceDir "venv-$Kind"
   $venvPython = Join-Path $venvDir 'Scripts\python.exe'
-  if (Test-Path -LiteralPath $venvPython) { return $venvPython }
   $versions = if ($Kind -in @('chatterbox', 'kokoro')) { @('-3.12', '-3.11', '-3.10') } else { @('-3.14', '-3.13', '-3.12', '-3.11', '-3.10') }
+  Assert-VoicePath $venvDir
+  $info = Get-VoicePythonInfo $venvPython -RequirePip
+  if ($info.Available -and "-$($info.Version)" -in $versions) { return $venvPython }
   $python = Find-Python $versions
-  & $python.Command @($python.Prefix) -m venv $venvDir
-  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $venvPython)) { throw 'Falha ao criar o ambiente virtual isolado.' }
-  & $venvPython -m pip install --disable-pip-version-check --upgrade pip | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw 'Falha ao preparar o pip no ambiente virtual isolado.' }
+  $backup = $null
+  if (Test-Path -LiteralPath $venvDir) {
+    $backup = "$venvDir.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    Assert-VoicePath $backup
+    Move-Item -LiteralPath $venvDir -Destination $backup
+    Write-Host "Ambiente anterior preservado em: $backup"
+  }
+  try {
+    & $python.Command @($python.Prefix) -m venv $venvDir | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Falha ao criar o ambiente virtual isolado.' }
+    $created = Get-VoicePythonInfo $venvPython -RequirePip
+    if (-not $created.Available) { throw "O novo ambiente Python não funciona: $($created.Error)" }
+    & $venvPython -m pip install --disable-pip-version-check --upgrade pip | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Falha ao preparar o pip no ambiente virtual isolado.' }
+  } catch {
+    if ($backup) {
+      if (Test-Path -LiteralPath $venvDir) {
+        $failed = "$venvDir.failed-$([Guid]::NewGuid().ToString('N'))"
+        Assert-VoicePath $venvDir
+        Assert-VoicePath $failed
+        Move-Item -LiteralPath $venvDir -Destination $failed
+        Write-Host "Tentativa incompleta preservada em: $failed"
+      }
+      Assert-VoicePath $backup
+      Assert-VoicePath $venvDir
+      Move-Item -LiteralPath $backup -Destination $venvDir
+    }
+    throw
+  }
   return $venvPython
 }
 

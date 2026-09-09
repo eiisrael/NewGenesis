@@ -37,3 +37,24 @@ test('valida formato da chave sem aceitar credenciais genéricas', () => {
   assert.throws(() => validateOpenRouterKey('sk-proj-paid'), /OpenRouter válida/);
   assert.throws(() => validateOpenRouterKey('token com espaços'), /OpenRouter válida/);
 });
+
+test('cofre ilegível é preservado e não gera chave mestra substituta', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'genesis-vault-recovery-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const settings = await new OpenRouterSettings(directory).init();
+  await settings.setKey(SAMPLE_KEY, { persist: true });
+  const vaultFile = path.join(directory, 'openrouter.vault');
+  const masterFile = path.join(directory, '.vault-key');
+  const vault = await fs.readFile(vaultFile, 'utf8');
+  const master = await fs.readFile(masterFile, 'utf8');
+  await fs.unlink(masterFile);
+  const unavailable = await new OpenRouterSettings(directory).init();
+  assert.equal(unavailable.key, '');
+  assert.equal(unavailable.publicState().error.code, 'vault_unreadable');
+  assert.equal(await fs.readFile(vaultFile, 'utf8'), vault);
+  await assert.rejects(fs.access(masterFile));
+  await fs.writeFile(masterFile, master);
+  const restored = await new OpenRouterSettings(directory).init();
+  assert.equal(restored.key, SAMPLE_KEY);
+  assert.equal(restored.publicState().error, undefined);
+});

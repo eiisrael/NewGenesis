@@ -3,6 +3,7 @@ param()
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VoiceDir = Join-Path $ProjectRoot '.genesis\voice'
+. (Join-Path $PSScriptRoot 'voice\python-runtime.ps1')
 $Checks = @(
   @{ Name = 'whisper.cpp 1.8.6'; Path = (Join-Path $VoiceDir 'bin\whisper-cli.exe') },
   @{ Name = 'whisper-server persistente 1.8.6'; Path = (Join-Path $VoiceDir 'bin\whisper-server.exe') },
@@ -25,6 +26,14 @@ Write-Host 'Diagnóstico local de voz do NewGenesis (nenhum áudio será captura
 $processorName = try { (Get-ItemProperty -LiteralPath 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0' -ErrorAction Stop).ProcessorNameString.Trim() } catch { $env:PROCESSOR_IDENTIFIER }
 $logicalProcessors = [Environment]::ProcessorCount
 Write-Host "CPU: $processorName · $logicalProcessors threads disponíveis"
+$vcRuntime = Join-Path $env:WINDIR 'System32\msvcp140.dll'
+$vcVersion = if (Test-Path -LiteralPath $vcRuntime -PathType Leaf) { (Get-Item -LiteralPath $vcRuntime).VersionInfo } else { $null }
+if ($vcVersion -and ($vcVersion.FileMajorPart -gt 14 -or ($vcVersion.FileMajorPart -eq 14 -and $vcVersion.FileMinorPart -ge 40))) {
+  Write-Host "[OK] Visual C++ x64 · $($vcVersion.FileVersion)"
+} else {
+  Write-Host '[FALHA] Visual C++ x64 ausente ou anterior a 14.40; o ONNX Runtime do Piper pode falhar ao carregar uma DLL.'
+  Write-Host 'Instale o redistribuível x64 oficial: https://aka.ms/vc14/vc_redist.x64.exe e reinicie o Genesis.'
+}
 $nvidia = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
 if ($nvidia) { & $nvidia.Source --query-gpu=name,memory.total,driver_version --format=csv,noheader }
 else {
@@ -35,7 +44,14 @@ else {
 foreach ($check in $Checks) {
   if (Test-Path -LiteralPath $check.Path -PathType Leaf) {
     $file = Get-Item -LiteralPath $check.Path
-    Write-Host ('[OK] {0} · {1:N1} MB' -f $check.Name, ($file.Length / 1MB))
+    if ($check.Name.StartsWith('Python isolado')) {
+      $info = Get-VoicePythonInfo $check.Path -RequirePip
+      if ($info.Available) { Write-Host "[OK] $($check.Name) · Python $($info.Version), pip operacional" }
+      else {
+        Write-Host "[FALHA] $($check.Name) · $($info.Error)"
+        Write-Host 'Reexecute scripts/setup-voice.ps1 com -Component correspondente, -PythonExecutable apontando para Python válido e -AcceptDownload. O ambiente anterior será preservado em backup.'
+      }
+    } else { Write-Host ('[OK] {0} · {1:N1} MB' -f $check.Name, ($file.Length / 1MB)) }
   } else { Write-Host "[--] $($check.Name)" }
 }
 

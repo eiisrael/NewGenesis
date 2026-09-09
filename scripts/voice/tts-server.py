@@ -36,7 +36,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def chunks(text: str, limit: int = 280) -> list[str]:
-    sentences = re.findall(r"[^.!?…]+[.!?…]+|[^.!?…]+$", text)
+    # Match only sentence boundaries, never the dots inside a number or name.
+    sentences = []
+    start = 0
+    for match in re.finditer(r'''[.!?…]+["'”’)]*\s+|\n{2,}''', text):
+        prefix = text[:match.start() + 1]
+        if match.group().startswith(".") and (
+            re.search(r"\b(?:sr|sra|srta|dr|dra|prof|profa|av|art|pág|págs|fig|aprox|tel)\.$", prefix, re.I)
+            or re.search(r"\b(?:[^\W\d_]\.){2,}$|\b[A-ZÀ-Ý]\.$|(?:^|\n)\s*\d+\.$", prefix)
+        ):
+            continue
+        sentences.append(text[start:match.end()])
+        start = match.end()
+    sentences.append(text[start:])
+    limit = max(1, int(limit))
     result: list[str] = []
     current = ""
     for sentence in sentences:
@@ -49,8 +62,10 @@ def chunks(text: str, limit: int = 280) -> list[str]:
             result.append(current)
         while len(clean) > limit:
             split_at = max(clean.rfind(mark, 0, limit + 1) for mark in ("; ", ": ", ", ", " "))
-            if split_at < limit // 2:
+            if split_at < max(1, limit // 2):
                 split_at = limit
+            elif clean[split_at] in ";:,":
+                split_at += 1
             result.append(clean[:split_at].strip())
             clean = clean[split_at:].strip()
         current = clean
@@ -85,7 +100,7 @@ class KokoroEngine:
         espeakng_loader.make_library_available()
         EspeakWrapper.set_library(espeakng_loader.get_library_path())
         EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
-        model = KModel(config=str(args.config.resolve(strict=True)), model=str(args.model.resolve(strict=True)))
+        model = KModel(config=str(args.config.resolve(strict=True)), model=str(args.model.resolve(strict=True))).eval()
         self.pipeline = KPipeline(lang_code="p", model=model)
 
     def synthesize(self, request: dict, output: Path) -> None:
@@ -180,17 +195,20 @@ def trim_wave_silence(output: Path, threshold: int = 96, keep_leading_ms: int = 
     if sys.byteorder != "little":
         samples.byteswap()
     frame_count = len(samples) // params.nchannels
-    active = []
-    for frame_index in range(frame_count):
+    def is_active(frame_index: int) -> bool:
         offset = frame_index * params.nchannels
-        if max(abs(samples[offset + channel]) for channel in range(params.nchannels)) >= threshold:
-            active.append(frame_index)
-    if not active:
+        return any(abs(samples[offset + channel]) >= threshold for channel in range(params.nchannels))
+
+    # Search only the outer silence. Do not allocate one Python integer for
+    # every audible frame or scan long utterances that need no trimming.
+    first = next((index for index in range(frame_count) if is_active(index)), None)
+    if first is None:
         raise RuntimeError("O sintetizador produziu somente silêncio.")
+    last = next(index for index in range(frame_count - 1, first - 1, -1) if is_active(index))
     leading = int(params.framerate * keep_leading_ms / 1000)
     trailing = int(params.framerate * keep_trailing_ms / 1000)
-    start = max(0, active[0] - leading)
-    end = min(frame_count, active[-1] + trailing + 1)
+    start = max(0, first - leading)
+    end = min(frame_count, last + trailing + 1)
     if start == 0 and end == frame_count:
         return
     trimmed = samples[start * params.nchannels:end * params.nchannels]

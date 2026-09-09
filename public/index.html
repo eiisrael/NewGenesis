@@ -112,6 +112,9 @@
           </div>
         </div>
         <div class="topbar-actions">
+          <button class="icon-button" id="bluetoothToggle" type="button" aria-label="Abrir dispositivos Bluetooth" title="Dispositivos Bluetooth">
+            <svg viewBox="0 0 24 24"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></svg>
+          </button>
           <button class="icon-button project-toggle" id="projectToggle" aria-label="Abrir projeto" title="Projeto ativo">
             <svg viewBox="0 0 24 24"><path d="M3.5 6.5h6l2 2H20.5v10h-17z"/><path d="M3.5 9h17"/></svg>
             <span class="project-active-dot" id="projectActiveDot" hidden></span>
@@ -501,6 +504,31 @@
     </div>
   </dialog>
   <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <dialog class="bluetooth-dialog" id="bluetoothDialog" aria-labelledby="bluetoothTitle">
+    <div class="bluetooth-heading"><h2 id="bluetoothTitle">Dispositivos Bluetooth</h2><button class="icon-button" id="bluetoothClose" type="button" aria-label="Fechar Bluetooth">×</button></div>
+    <p>Conecte um dispositivo BLE para consultar informações ou executar uma ação configurada por você. Operações locais não gastam cota de modelos.</p>
+    <p id="bluetoothStatus" role="status" aria-live="polite">Verificando suporte…</p>
+    <label class="bluetooth-field">Nome começa com (opcional)<input id="bluetoothNamePrefix" maxlength="40" autocomplete="off" placeholder="Nome do seu dispositivo"></label>
+    <small>Sem nome informado, o seletor procura serviços de bateria, informações e a ação configurada.</small>
+    <div class="bluetooth-actions"><button id="bluetoothConnect" type="button">Conectar</button><button id="bluetoothDisconnect" type="button" disabled>Desconectar</button><button id="bluetoothBattery" type="button" disabled>Ler bateria</button><button id="bluetoothInfo" type="button" disabled>Ler informações</button></div>
+    <details class="bluetooth-custom"><summary>Configurar ação do dispositivo</summary>
+      <p>Use os UUIDs e os bytes documentados pelo fabricante. A configuração vale apenas nesta sessão e deve ser feita antes da conexão. Deixe os bytes vazios para permitir somente leitura.</p>
+      <label class="bluetooth-field">Nome da ação<input id="bluetoothActionLabel" maxlength="40" autocomplete="off" placeholder="Ex.: acender indicador"></label>
+      <label class="bluetooth-field">UUID completo do serviço<input id="bluetoothService" maxlength="36" autocomplete="off" spellcheck="false"></label>
+      <label class="bluetooth-field">UUID completo da característica<input id="bluetoothCharacteristic" maxlength="36" autocomplete="off" spellcheck="false"></label>
+      <label class="bluetooth-field">Bytes da ação (hexadecimal, até 20 bytes)<input id="bluetoothWriteHex" maxlength="60" autocomplete="off" spellcheck="false" placeholder="Ex.: 01 ff — somente conforme o fabricante"></label>
+      <div class="bluetooth-actions"><button id="bluetoothSaveAction" type="button">Salvar ação nesta sessão</button><button id="bluetoothClearAction" type="button">Remover ação</button></div>
+    </details>
+    <small id="bluetoothActionStatus">Nenhuma ação configurada</small>
+    <div class="bluetooth-actions"><button id="bluetoothReadAction" type="button" disabled>Ler ação</button><button id="bluetoothWriteAction" type="button" disabled>Executar ação…</button></div>
+    <pre class="bluetooth-output" id="bluetoothOutput" role="status" aria-live="polite">No chat ou na voz: “Bluetooth bateria”, “Bluetooth informações”, “Bluetooth status” ou “Bluetooth ajuda”.</pre>
+    <small>Disponibilidade depende do navegador e dos serviços do dispositivo. Áudio de fones, arquivos de celular e controle de computadores exigem integração própria e não são oferecidos por este painel BLE.</small>
+  </dialog>
+  <dialog class="bluetooth-dialog" id="bluetoothConfirmDialog" aria-labelledby="bluetoothConfirmTitle">
+    <h2 id="bluetoothConfirmTitle">Confirmar ação no dispositivo</h2>
+    <pre class="bluetooth-output" id="bluetoothConfirmDetail"></pre>
+    <div class="bluetooth-actions"><button id="bluetoothConfirmCancel" type="button" autofocus>Cancelar</button><button id="bluetoothConfirmAccept" type="button">Confirmar envio desta ação</button></div>
+  </dialog>
   <script type="module" src="/app.js"></script>
   <script type="module" src="/voice.js"></script>
 </body>

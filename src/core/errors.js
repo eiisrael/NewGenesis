@@ -22,6 +22,17 @@ export class GenesisUnavailableError extends Error {
 
 const includesAny = (value, terms) => terms.some(term => value.includes(term));
 
+export function retryAfterMilliseconds(value, timestamp = Date.now()) {
+  const text = String(value || '').trim();
+  if (!text) return 0;
+  if (/^\d+$/.test(text)) {
+    const milliseconds = Number(text) * 1000;
+    return Number.isSafeInteger(milliseconds) ? milliseconds : 0;
+  }
+  const date = Date.parse(text);
+  return Number.isFinite(date) ? Math.max(0, date - timestamp) : 0;
+}
+
 export function classifyProviderError(providerId, response, payload) {
   const responseStatus = Number(response?.status || 0);
   const payloadStatus = Number(payload?.error?.code || 0);
@@ -29,8 +40,7 @@ export function classifyProviderError(providerId, response, payload) {
   const rawMessage = payload?.error?.message || payload?.message || `Falha HTTP ${status || 'desconhecida'}`;
   const message = String(rawMessage).slice(0, 500);
   const text = message.toLowerCase();
-  const retryAfter = Number(response?.headers?.get?.('retry-after'));
-  const retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 0;
+  const retryAfterMs = retryAfterMilliseconds(response?.headers?.get?.('retry-after'));
 
   let category = 'unknown';
   let code = 'provider_error';

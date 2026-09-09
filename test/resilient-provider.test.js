@@ -29,6 +29,16 @@ const writeTool = [{
   }
 }];
 
+test('rota em quota respeita Retry-After maior que dez minutos', async () => {
+  const provider = createProvider();
+  provider.activeModel = 'first:free';
+  const before = Date.now();
+  provider.markFailure(new ProviderError('quota', { category: 'quota', retryAfterMs: 3_600_000 }));
+  assert.ok(provider.routeState('first:free').cooldownUntil >= before + 3_600_000);
+  assert.equal(provider.routeCanAttempt('first:free'), false);
+  assert.equal(provider.routeCanAttempt('second:free'), true);
+});
+
 test('falha de um modelo não derruba todas as rotas do provedor', async () => {
   const provider = createProvider();
   provider.catalog = [

@@ -172,7 +172,7 @@ export class LocalTextToSpeechEngine {
     this.generation = 0;
     this.warm = false;
     this.health = 'unknown';
-    this.requestTimeoutMs = Number(requestTimeoutMs) || ({ kokoro: 30_000, piper: 62_000, chatterbox: 62_000 }[engine] || 47_000);
+    this.requestTimeoutMs = Number(requestTimeoutMs) || ({ kokoro: 122_000, piper: 62_000, chatterbox: 62_000 }[engine] || 47_000);
   }
 
   get available() { return this.serverAvailable && Boolean(globalThis.AudioContext || globalThis.webkitAudioContext); }

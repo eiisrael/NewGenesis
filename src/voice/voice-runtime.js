@@ -2,16 +2,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 const MAX_AUDIO_DURATION_SECONDS = 45;
 const MAX_TTS_TEXT = 2000;
 const MAX_TTS_AUDIO_BYTES = 24 * 1024 * 1024;
+const TTS_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const TTS_CACHE_MAX_ENTRIES = 32;
+const TTS_CACHE_TTL_MS = 5 * 60_000;
+const PYTHON_PROBE_TTL_MS = 60_000;
 const STT_TIMEOUT_MS = Object.freeze({ rapid: 18_000, balanced: 30_000, accurate: 50_000 });
 const WHISPER_STARTUP_TIMEOUT_MS = 20_000;
 const WHISPER_FAILURE_COOLDOWN_MS = 15_000;
 const TTS_TIMEOUT_MS = Object.freeze({ kokoro: 28_000, chatterbox: 60_000, piper: 60_000 });
-const TTS_STARTUP_TIMEOUT_MS = Object.freeze({ kokoro: 28_000, chatterbox: 60_000, piper: 60_000 });
+const TTS_STARTUP_TIMEOUT_MS = Object.freeze({ kokoro: 120_000, chatterbox: 60_000, piper: 60_000 });
 const KOKORO_FAILURE_COOLDOWN_MS = 30_000;
 const WHISPER_INITIAL_PROMPT = 'Genesis. Gênesis. Caruaru. Pernambuco. SupremeMind. Assistente Genesis em português do Brasil.';
 
@@ -23,7 +28,7 @@ const ttsPresets = Object.freeze({
 });
 
 export class VoiceRuntime {
-  constructor({ root, dataDir, telemetry = null, spawnImpl = spawn, fetchImpl = globalThis.fetch, backgroundWarmup = true, timeouts = {} } = {}) {
+  constructor({ root, dataDir, telemetry = null, spawnImpl = spawn, fetchImpl = globalThis.fetch, backgroundWarmup = true, timeouts = {}, ttsCache = {} } = {}) {
     this.root = path.resolve(root || process.cwd());
     this.voiceDir = path.resolve(dataDir || path.join(this.root, '.genesis'), 'voice');
     this.tempDir = path.join(this.voiceDir, 'tmp');
@@ -34,6 +39,7 @@ export class VoiceRuntime {
       stt: Object.fromEntries(Object.entries(STT_TIMEOUT_MS).map(([profile, value]) => [profile, positiveTimeout(timeouts.stt?.[profile] ?? timeouts.stt, value)])),
       whisperStartup: positiveTimeout(timeouts.whisperStartup, WHISPER_STARTUP_TIMEOUT_MS),
       whisperCooldown: positiveTimeout(timeouts.whisperCooldown, WHISPER_FAILURE_COOLDOWN_MS),
+      pythonProbe: positiveTimeout(timeouts.pythonProbe, 5_000),
       tts: Object.fromEntries(Object.entries(TTS_TIMEOUT_MS).map(([engine, value]) => [engine, positiveTimeout(timeouts.tts?.[engine], value)])),
       ttsStartup: Object.fromEntries(Object.entries(TTS_STARTUP_TIMEOUT_MS).map(([engine, value]) => [engine, positiveTimeout(timeouts.ttsStartup?.[engine], value)])),
       kokoroCooldown: positiveTimeout(timeouts.kokoroCooldown, KOKORO_FAILURE_COOLDOWN_MS)
@@ -43,10 +49,18 @@ export class VoiceRuntime {
     this.active = { stt: false, tts: false };
     this.children = new Set();
     this.ttsWorkers = new Map();
+    this.pythonProbes = new Map();
     this.ttsQueue = [];
     this.ttsDraining = false;
     this.ttsActiveJob = null;
     this.ttsCooldownUntil = new Map();
+    this.ttsAudioCache = new Map();
+    this.ttsCacheBytes = 0;
+    this.ttsCacheLimits = {
+      maxBytes: clamp(ttsCache.maxBytes, 0, TTS_CACHE_MAX_BYTES, TTS_CACHE_MAX_BYTES),
+      maxEntries: Math.floor(clamp(ttsCache.maxEntries, 0, TTS_CACHE_MAX_ENTRIES, TTS_CACHE_MAX_ENTRIES)),
+      ttlMs: clamp(ttsCache.ttlMs, 0, TTS_CACHE_TTL_MS, TTS_CACHE_TTL_MS)
+    };
     this.whisperServer = null;
     this.whisperCooldownUntil = 0;
     this.engineHealth = new Map(['whisper', 'kokoro', 'chatterbox', 'piper'].map(name => [name, { warming: false, lastError: null }]));
@@ -96,9 +110,14 @@ export class VoiceRuntime {
     const kokoroModel = this.#resolve(this.manifest.kokoro.model);
     const kokoroConfig = this.#resolve(this.manifest.kokoro.config);
     const kokoroVoices = this.#resolve(this.manifest.kokoro.voices);
-    const piperPythonAvailable = await isFile(piperPython);
-    const chatterboxPythonAvailable = await isFile(chatterboxPython);
-    const kokoroPythonAvailable = await isFile(kokoroPython);
+    const [piperPythonStatus, chatterboxPythonStatus, kokoroPythonStatus] = await Promise.all([
+      this.#probePython('piper', piperPython),
+      this.#probePython('chatterbox', chatterboxPython),
+      this.#probePython('kokoro', kokoroPython)
+    ]);
+    const piperPythonAvailable = piperPythonStatus.available;
+    const chatterboxPythonAvailable = chatterboxPythonStatus.available;
+    const kokoroPythonAvailable = kokoroPythonStatus.available;
     const persistentSttAvailable = whisperAvailable && await isFile(whisperServerBinary);
     const workerAvailable = await isFile(worker);
     const kokoroAvailable = kokoroPythonAvailable && workerAvailable && await isFile(kokoroModel) && await isFile(kokoroConfig) && await hasKokoroVoices(kokoroVoices);
@@ -128,13 +147,40 @@ export class VoiceRuntime {
         }
       },
       tts: {
-        kokoro: { available: kokoroAvailable, version: this.manifest.kokoro.version, model: this.manifest.kokoro.modelId, voices: [...this.manifest.kokoro.voiceNames], ...kokoroRuntime, processMode: 'persistent-worker' },
-        chatterbox: { available: chatterboxAvailable, version: this.manifest.chatterbox.version, model: this.manifest.chatterbox.model, ...chatterboxRuntime, processMode: 'persistent-worker' },
-        piper: { available: piperAvailable, version: this.manifest.piper.version, model: this.manifest.piper.voice, ...piperRuntime, processMode: 'persistent-worker' }
+        kokoro: { available: kokoroAvailable, version: this.manifest.kokoro.version, model: this.manifest.kokoro.modelId, voices: [...this.manifest.kokoro.voiceNames], ...kokoroRuntime, pythonAvailable: kokoroPythonAvailable, ...kokoroPythonStatus.error, processMode: 'persistent-worker' },
+        chatterbox: { available: chatterboxAvailable, version: this.manifest.chatterbox.version, model: this.manifest.chatterbox.model, ...chatterboxRuntime, pythonAvailable: chatterboxPythonAvailable, ...chatterboxPythonStatus.error, processMode: 'persistent-worker' },
+        piper: { available: piperAvailable, version: this.manifest.piper.version, model: this.manifest.piper.voice, ...piperRuntime, pythonAvailable: piperPythonAvailable, ...piperPythonStatus.error, processMode: 'persistent-worker' }
       }
     };
     this.snapshot.queue = { ttsWaiting: this.ttsQueue.length, ttsActive: this.active.tts, sttActive: this.active.stt };
     return this.status();
+  }
+
+  async #probePython(engine, executable) {
+    let file;
+    try { file = await fs.stat(executable); } catch { return { available: false }; }
+    if (!file.isFile()) return { available: false };
+    const config = await fs.stat(path.join(path.dirname(path.dirname(executable)), 'pyvenv.cfg')).catch(() => null);
+    const signature = `${file.mtimeMs}:${file.size}:${config?.mtimeMs}:${config?.size}`;
+    const cached = this.pythonProbes.get(executable);
+    if (cached?.signature === signature && cached.expiresAt > Date.now()) return cached.promise;
+    const modules = engine === 'piper' ? ['piper', 'onnxruntime']
+      : engine === 'kokoro' ? ['kokoro', 'torch', 'misaki', 'phonemizer', 'soundfile', 'espeakng_loader']
+        : ['torch', 'torchaudio', 'huggingface_hub'];
+    const probe = `import sys,importlib.util; assert (3,10) <= sys.version_info[:2] <= (3,${engine === 'piper' ? 14 : 12}), 'Versao Python incompativel'; missing=[name for name in ${JSON.stringify(modules)} if importlib.util.find_spec(name) is None]; assert not missing, 'Dependencias Python ausentes: '+', '.join(missing)`;
+    const promise = this.#run(executable, ['-I', '-c', probe], {
+      deadline: Date.now() + this.timeouts.pythonProbe,
+      kind: 'voice_python',
+      env: { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+    }).then(() => ({ available: true }), error => ({
+      available: false,
+      error: { lastError: `Python de ${engine} indisponível. Reexecute scripts/setup-voice.ps1 -Component ${engine} com um Python válido. ${sanitizeEngineError(error.message)}` }
+    }));
+    this.pythonProbes.set(executable, { signature, expiresAt: Date.now() + PYTHON_PROBE_TTL_MS, promise });
+    const result = await promise;
+    // Retry a repaired environment promptly without probing on every status poll.
+    if (!result.available && this.pythonProbes.get(executable)?.promise === promise) this.pythonProbes.get(executable).expiresAt = Date.now() + 5_000;
+    return result;
   }
 
   async transcribe(audio, { quality = 'rapid', segmented = false, signal = null } = {}) {
@@ -193,13 +239,22 @@ export class VoiceRuntime {
     const safeText = validateTtsText(text);
     if (!['kokoro', 'chatterbox', 'piper'].includes(engine)) throw runtimeError(400, 'invalid_tts_engine', 'Engine TTS inválido.');
     const selectedPreset = Object.hasOwn(ttsPresets, preset) ? preset : 'natural';
+    const selectedVoice = this.manifest.kokoro.voiceNames.includes(voice) ? voice : 'pf_dora';
+    const selectedRate = clamp(rate, 0.7, 1.6, 1);
+    const cacheKey = createHash('sha256').update(JSON.stringify([engine, this.manifest[engine], selectedVoice, selectedPreset, selectedRate, safeText])).digest('hex');
     const startedAt = performance.now();
-    const deadline = Date.now() + this.timeouts.tts[engine];
+    // Cold model imports/loading need more time; ready workers retain the shorter synthesis budget.
+    const startupBudget = this.ttsWorkers.get(engine)?.ready ? 0 : this.timeouts.ttsStartup[engine];
+    const deadline = Date.now() + Math.max(this.timeouts.tts[engine], startupBudget);
     return this.#enqueueTts(async (jobSignal, absoluteDeadline) => {
       throwIfVoiceAborted(jobSignal);
       throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine));
       const current = await this.refreshStatus();
-      if (!current.tts[engine]?.available) throw runtimeError(503, `${engine}_not_installed`, `${engine} não está instalado. Execute scripts/setup-voice.ps1.`);
+      if (!current.tts[engine]?.available) throw runtimeError(503, `${engine}_not_installed`, current.tts[engine]?.lastError || `${engine} não está instalado. Execute scripts/setup-voice.ps1.`);
+      throwIfVoiceAborted(jobSignal);
+      throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine));
+      const cachedAudio = this.#readTtsCache(cacheKey);
+      if (cachedAudio) return { audio: cachedAudio, engine, preset: selectedPreset, processMode: 'memory-cache', latencyMs: Math.round(performance.now() - startedAt) };
       const cooldownUntil = this.ttsCooldownUntil.get(engine) || 0;
       if (cooldownUntil > Date.now()) {
         throw runtimeError(503, `${engine}_worker_cooldown`, `${engine} está em recuperação após uma falha de inicialização. Tente novamente em instantes.`);
@@ -209,15 +264,17 @@ export class VoiceRuntime {
       try {
         throwIfVoiceAborted(jobSignal);
         throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine));
-        const selectedVoice = this.manifest.kokoro.voiceNames.includes(voice) ? voice : 'pf_dora';
         const worker = await this.#ttsWorker(engine, { signal: jobSignal, deadline: absoluteDeadline });
-        await worker.request({ text: safeText, output: outputPath, preset: selectedPreset, rate: clamp(rate, 0.7, 1.6, 1), voice: selectedVoice }, { signal: jobSignal, deadline: absoluteDeadline });
+        await worker.request({ text: safeText, output: outputPath, preset: selectedPreset, rate: selectedRate, voice: selectedVoice }, { signal: jobSignal, deadline: absoluteDeadline });
         throwIfVoiceAborted(jobSignal);
         throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine, worker.stderr));
         const audio = await fs.readFile(outputPath);
         if (audio.length < 44 || audio.length > MAX_TTS_AUDIO_BYTES || audio.toString('ascii', 0, 4) !== 'RIFF') {
           throw runtimeError(502, 'invalid_tts_audio', 'O sintetizador local retornou um WAV inválido.');
         }
+        throwIfVoiceAborted(jobSignal);
+        throwIfDeadlineExpired(absoluteDeadline, () => ttsTimeoutError(engine));
+        this.#writeTtsCache(cacheKey, audio);
         return { audio, engine, preset: selectedPreset, processMode: 'persistent-worker', latencyMs: Math.round(performance.now() - startedAt) };
       } catch (error) {
         if (isVoiceAbort(error) || isVoiceTimeout(error)) this.#discardTtsWorker(engine, error);
@@ -254,7 +311,40 @@ export class VoiceRuntime {
     this.#stopWhisperServer(error);
     for (const worker of this.ttsWorkers.values()) worker.close(error);
     this.ttsWorkers.clear();
+    this.ttsAudioCache.clear();
+    this.ttsCacheBytes = 0;
     for (const child of this.children) child.kill('SIGTERM');
+  }
+
+  #readTtsCache(key) {
+    const now = Date.now();
+    for (const [entryKey, entry] of this.ttsAudioCache) {
+      if (entry.expiresAt <= now) this.#removeTtsCacheEntry(entryKey);
+    }
+    const entry = this.ttsAudioCache.get(key);
+    if (!entry) return null;
+    this.ttsAudioCache.delete(key);
+    this.ttsAudioCache.set(key, entry);
+    return Buffer.from(entry.audio);
+  }
+
+  #writeTtsCache(key, audio) {
+    const { maxBytes, maxEntries, ttlMs } = this.ttsCacheLimits;
+    if (!maxEntries || !ttlMs || audio.length > maxBytes) return;
+    this.#removeTtsCacheEntry(key);
+    while (this.ttsAudioCache.size && (this.ttsCacheBytes + audio.length > maxBytes || this.ttsAudioCache.size >= maxEntries)) {
+      this.#removeTtsCacheEntry(this.ttsAudioCache.keys().next().value);
+    }
+    // Only generated speech is retained, in bounded process memory. Copies
+    // prevent a playback consumer from modifying another request's audio.
+    this.ttsAudioCache.set(key, { audio: Buffer.from(audio), expiresAt: Date.now() + ttlMs });
+    this.ttsCacheBytes += audio.length;
+  }
+
+  #removeTtsCacheEntry(key) {
+    const entry = this.ttsAudioCache.get(key);
+    if (entry) this.ttsCacheBytes -= entry.audio.length;
+    this.ttsAudioCache.delete(key);
   }
 
   async flush() {
@@ -413,7 +503,8 @@ export class VoiceRuntime {
       throwIfVoiceAborted(signal);
       throwIfDeadlineExpired(deadline, () => runtimeError(504, 'voice_stt_timeout', 'A transcrição local excedeu o tempo limite.'));
       await fs.writeFile(inputPath, buffer, { flag: 'wx', mode: 0o600 });
-      const args = ['-m', selected.model, '-f', inputPath, '-l', 'pt', '-oj', '-of', outputPrefix, '-np', '-nt'];
+      // whisper.cpp 1.8.6 flash attention can crash the Windows CPU backend.
+      const args = ['-m', selected.model, '-f', inputPath, '-l', 'pt', '-oj', '-of', outputPrefix, '-np', '-nt', '-nfa'];
       args.push('--prompt', WHISPER_INITIAL_PROMPT);
       const vad = this.#resolve(this.manifest.whisper.vadModel);
       if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
@@ -474,7 +565,7 @@ export class VoiceRuntime {
     const port = await availableLoopbackPort();
     throwIfVoiceAborted(signal);
     const binary = this.#resolve(this.manifest.whisper.serverBinary);
-    const args = ['-m', selected.model, '--host', '127.0.0.1', '--port', String(port), '-l', 'pt', '-nt', '-ng'];
+    const args = ['-m', selected.model, '--host', '127.0.0.1', '--port', String(port), '-l', 'pt', '-nt', '-ng', '-nfa'];
     const vad = this.#resolve(this.manifest.whisper.vadModel);
     if (await isFile(vad)) args.push('--vad', '--vad-model', vad);
     const child = this.spawnImpl(binary, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(binary), env: process.env });

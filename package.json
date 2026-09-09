@@ -8,13 +8,14 @@
     "start": "node src/server.js",
     "test": "node --test",
     "test:browser": "node scripts/voice-browser-smoke.mjs",
+    "test:browser:bluetooth": "node scripts/bluetooth-browser-smoke.mjs",
     "voice:diagnose": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/diagnose-voice.ps1",
     "voice:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-voice.ps1",
     "voice:benchmark": "node scripts/voice-benchmark.mjs",
     "voice:benchmark:loopback": "node scripts/voice-loopback-benchmark.mjs",
     "voice:benchmark:kokoro": "node scripts/voice-loopback-benchmark.mjs http://127.0.0.1:7331 kokoro",
     "voice:benchmark:resources": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/voice-resource-benchmark.ps1",
-    "check": "node --check src/server.js && node --check src/runtime-lifecycle.js && node --check src/project-tools.js && node --check src/voice/voice-runtime.js && node --check public/app.js && node --check public/voice.js && node --check public/voice/state-machine.js && node --check public/voice/conversation-controller.js && node --check public/voice/audio-input.js && node --check public/voice/engines.js && node --check public/voice/audio-playback.js && node --check public/voice/speech-normalizer.js && node --check scripts/voice-browser-smoke.mjs && node --check scripts/voice-benchmark.mjs && node --check scripts/voice-loopback-benchmark.mjs && node --test"
+    "check": "node --check src/server.js && node --check src/runtime-lifecycle.js && node --check src/project-tools.js && node --check src/voice/voice-runtime.js && node --check public/app.js && node --check public/bluetooth.js && node --check public/bluetooth-ui.js && node --check public/voice.js && node --check public/voice/state-machine.js && node --check public/voice/conversation-controller.js && node --check public/voice/audio-input.js && node --check public/voice/engines.js && node --check public/voice/audio-playback.js && node --check public/voice/speech-normalizer.js && node --check scripts/voice-browser-smoke.mjs && node --check scripts/bluetooth-browser-smoke.mjs && node --check scripts/voice-benchmark.mjs && node --check scripts/voice-loopback-benchmark.mjs && node --test"
   },
   "engines": {
     "node": ">=20"

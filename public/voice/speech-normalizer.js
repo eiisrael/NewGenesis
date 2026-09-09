@@ -25,7 +25,7 @@ export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   text = text.replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/g, '$1');
   text = text.replace(/https?:\/\/\S+/g, 'um link');
   text = text.replace(/\bpt[-_]BR\b/gi, 'português do Brasil');
-  text = text.replace(/\bv?(\d+)\.(\d+)\.(\d+)\b/g, (_, major, minor, patch) => `versão ${major} ponto ${minor} ponto ${patch}`);
+  text = text.replace(/\b(?:versão\s+v?|v)(\d+)\.(\d+)\.(\d+)\b/gi, (_, major, minor, patch) => `versão ${major} ponto ${minor} ponto ${patch}`);
   text = text.replace(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g, (_, day, month, year) => spokenDate(day, month, year));
   text = text.replace(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/g, (_, hour, minute, second) => spokenTime(hour, minute, second));
   text = text.replace(/(-?\d+(?:[.,]\d+)?)\s*°\s*C\b/gi, '$1 graus Celsius');
@@ -45,25 +45,35 @@ export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
 
 export function takeStableSentences(value, { flush = false, maxChunk = 260 } = {}) {
   const input = String(value || '');
+  const limit = Number.isFinite(Number(maxChunk)) ? Math.max(1, Math.floor(Number(maxChunk))) : 260;
   const boundaries = [];
   const pattern = /[.!?…]+(?:["'”’)]*)\s+|\n{2,}/g;
   let match;
-  while ((match = pattern.exec(input))) boundaries.push(match.index + match[0].length);
+  while ((match = pattern.exec(input))) {
+    // A title, initial or list marker is not a completed thought. Keeping its
+    // continuation also prevents artificial pauses in streamed speech.
+    if (match[0].startsWith('.') && isAbbreviation(input.slice(0, match.index + 1))) continue;
+    boundaries.push(match.index + match[0].length);
+  }
   let consumed = boundaries.at(-1) || 0;
-  if (flush) consumed = input.length;
+  if (flush) {
+    consumed = input.length;
+    if (boundaries.at(-1) !== consumed) boundaries.push(consumed);
+  }
   if (!consumed) return { chunks: [], rest: input };
 
-  const stable = input.slice(0, consumed).trim();
   const rest = input.slice(consumed);
-  const sentences = stable.match(/[^.!?…]+[.!?…]+["'”’)]*|[^.!?…]+$/g) || [];
   const chunks = [];
   let current = '';
-  for (const sentence of sentences) {
+  let start = 0;
+  for (const end of boundaries) {
+    const sentence = input.slice(start, end);
+    start = end;
     const cleaned = sentence.replace(/\s+/g, ' ').trim();
     if (!cleaned) continue;
-    for (const part of splitForSpeech(cleaned, maxChunk)) {
+    for (const part of splitForSpeech(cleaned, limit)) {
       const combined = `${current} ${part}`.trim();
-      if (combined.length > maxChunk && current) {
+      if (combined.length > limit && current) {
         chunks.push(current);
         current = part;
       } else current = combined;
@@ -71,6 +81,13 @@ export function takeStableSentences(value, { flush = false, maxChunk = 260 } = {
   }
   if (current) chunks.push(current);
   return { chunks, rest };
+}
+
+function isAbbreviation(value) {
+  return /\b(?:sr|sra|srta|dr|dra|prof|profa|av|art|pág|págs|fig|aprox|tel)\.$/iu.test(value)
+    || /\b(?:[\p{L}]\.){2,}$/u.test(value)
+    || /\b[\p{Lu}]\.$/u.test(value)
+    || /(?:^|\n)\s*\d+\.$/u.test(value);
 }
 
 export function similarityToPlayback(transcript, spokenText) {
@@ -112,9 +129,10 @@ function splitForSpeech(value, maxChunk) {
   while (rest.length > maxChunk) {
     const window = rest.slice(0, maxChunk + 1);
     const candidates = [window.lastIndexOf('; '), window.lastIndexOf(': '), window.lastIndexOf(', '), window.lastIndexOf(' ')];
-    const splitAt = candidates.find(index => index >= Math.floor(maxChunk * 0.55)) ?? maxChunk;
-    result.push(rest.slice(0, splitAt + (rest[splitAt] === ' ' ? 0 : 1)).trim());
-    rest = rest.slice(splitAt + 1).trim();
+    const splitAt = candidates.find(index => index >= Math.floor(maxChunk * 0.55) && index < maxChunk);
+    const end = splitAt == null ? maxChunk : splitAt + (rest[splitAt] === ' ' ? 0 : 1);
+    result.push(rest.slice(0, end).trim());
+    rest = rest.slice(end).trim();
   }
   if (rest) result.push(rest);
   return result;

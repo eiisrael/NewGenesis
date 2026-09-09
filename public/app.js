@@ -1,6 +1,11 @@
+import { parseBluetoothCommand } from './bluetooth.js';
+import { createBluetoothPanel } from './bluetooth-ui.js';
+
 const $ = selector => document.querySelector(selector);
 
 const $$ = selector => [...document.querySelectorAll(selector)];
+
+const bluetoothPanel = createBluetoothPanel();
 
 const icons = {
   chat: '<svg viewBox="0 0 24 24"><path d="M5 5h14v10H8l-3 3V5Z"/></svg>',
@@ -2016,6 +2021,7 @@ async function loadConversation(id) {
 }
 
 async function deleteConversation(id) {
+  if (state.sending) return toast('Pare a resposta atual antes de excluir uma conversa.', 'warning');
   if (!window.confirm('Excluir esta conversa e sua memória local?')) return;
   await api(`/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
   state.conversations = state.conversations.filter(item => item.id !== id);
@@ -2332,6 +2338,49 @@ function handleStreamEvent(event, payload) {
   }
 }
 
+async function sendBluetoothMessage(content, command, options) {
+  const controller = new AbortController();
+  state.activeRequestController = controller;
+  state.stopRequested = false;
+  setSending(true);
+  elements.messageInput.value = '';
+  autoResizeInput();
+  let conversationId = state.current?.id;
+  let deviceResult = null;
+  emitChatLifecycle('start', { conversationId, source: options.source || 'composer' });
+  try {
+    if (!state.current) await createConversation();
+    conversationId = state.current.id;
+    deviceResult = await bluetoothPanel.execute(command, { signal: controller.signal });
+    // Preserve the device outcome even if Stop was pressed after the physical operation.
+    const payload = await api(`/api/conversations/${encodeURIComponent(conversationId)}/device-actions`, {
+      method: 'POST',
+      body: JSON.stringify({ content, result: deviceResult, inputMetadata: options.inputMetadata })
+    });
+    state.current = payload.conversation;
+    const index = state.conversations.findIndex(item => item.id === conversationId);
+    const summary = { ...state.current, messageCount: state.current.messages.length };
+    delete summary.messages;
+    if (index >= 0) state.conversations[index] = summary;
+    else state.conversations.unshift(summary);
+    state.conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    renderConversations();
+    renderMessages();
+    const lastAssistant = [...state.current.messages].reverse().find(message => message.role === 'assistant');
+    emitChatLifecycle('end', { conversationId, content: lastAssistant?.content || deviceResult.content });
+  } catch (error) {
+    toast(deviceResult ? `Resultado no painel Bluetooth; não foi possível salvar no histórico: ${error.message}` : error.message, 'error');
+    if (deviceResult) bluetoothPanel.open();
+    emitChatLifecycle('error', { conversationId, error: { name: error?.name || 'Error', message: error?.message || 'Falha no Bluetooth.' } });
+  } finally {
+    if (state.activeRequestController === controller) state.activeRequestController = null;
+    state.stopRequested = false;
+    setSending(false);
+    elements.messageInput.focus();
+    scrollToBottom();
+  }
+}
+
 async function sendMessage(prefill, options = {}) {
   if (state.sending) return;
   if (state.handoffLoading) return toast('Aguarde o novo modelo concluir a leitura da memória.', 'warning');
@@ -2341,6 +2390,8 @@ async function sendMessage(prefill, options = {}) {
     : null;
   const content = String(prefill ?? elements.messageInput.value).trim();
   if (!content && !state.pendingAttachments.length && !editedMessage?.attachments?.length) return;
+  const bluetoothCommand = !editMessageId && !state.pendingAttachments.length ? parseBluetoothCommand(content) : null;
+  if (bluetoothCommand) return sendBluetoothMessage(content, bluetoothCommand, options);
   if (!state.current) await createConversation();
   if (editMessageId && !editedMessage) return toast('A mensagem que seria editada não foi encontrada.', 'error');
   const conversationId = state.current.id;
@@ -2794,7 +2845,7 @@ function bindEvents() {
   document.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'n') { event.preventDefault(); openNeuralInterface(); }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); elements.messageInput.focus(); }
-    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'o') { event.preventDefault(); clearPendingAttachments(); createConversation(); }
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'o') { event.preventDefault(); $('#newChatButton').click(); }
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'l') { event.preventDefault(); openLogs(); }
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'p') { event.preventDefault(); state.project ? openProjectDialog() : chooseProjectFolder(); }
     if (event.key === 'Escape') { closeConversationPopover(); closeAttachmentMenu(); closePermissionMenu(); closeDrawers(); if (elements.projectDialog.open) elements.projectDialog.close(); }

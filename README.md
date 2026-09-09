@@ -26,6 +26,14 @@ Principais capacidades:
 - roteamento somente por modelos gratuitos quando a OpenRouter é utilizada;
 - proteções de orçamento, timeout, rede, segredos e mutação.
 
+O botão **Bluetooth** conecta periféricos BLE compatíveis pelo seletor do navegador. O chat e a voz reconhecem comandos como `Bluetooth bateria` e `Bluetooth informações`, sem consumir requisições de IA. Ações próprias do dispositivo podem ser configuradas pelo protocolo GATT do fabricante, com confirmação antes de cada escrita. Veja [Bluetooth: configuração, comandos e limites](docs/BLUETOOTH.md).
+
+A memória adaptativa reconhece preferências de respostas, estilo visual e linguagem falada, como “Prefiro respostas curtas”, “Prefiro imagens realistas” e “Quero voz natural”. Correções explícitas mais recentes prevalecem; o pedido atual continua tendo prioridade. Desativar a memória também interrompe a recuperação de memórias de projeto. O histórico canônico permanece local e edições de mensagens ou anexos invalidam o contexto em cache.
+
+Na geração visual, planejamento, avaliação, tentativas de geração e falhas compartilham o teto de requisições da tarefa. O modo Rápido usa planejamento local; os demais modos reservam chamadas auxiliares para pedidos que precisam delas. Tokens sem medição do provedor são identificados como estimativas. As cotas externas continuam sendo definidas pelo provedor, e o Genesis respeita o tempo de espera informado por ele.
+
+A fala preserva números e abreviações ao dividir frases. Um cache de áudio em memória, limitado a 16 MiB, 32 entradas e cinco minutos, evita sintetizar novamente a mesma fala com a mesma configuração. O realismo acústico depende da engine e do modelo de voz instalados; a resposta por texto e o fallback de voz continuam disponíveis.
+
 ## Filosofia do projeto
 
 O NewGenesis segue alguns princípios importantes:

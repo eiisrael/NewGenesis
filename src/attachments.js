@@ -106,10 +106,15 @@ function prepareImageEditingTurn(conversation) {
   if (hasNonImageAttachments) return;
 
   let recentImages = [];
+  let sourceContext = null;
   for (let index = latestUserIndex - 1; index >= Math.max(0, latestUserIndex - 6); index -= 1) {
+    if (messages[index]?.role === 'user') break;
     if (messages[index]?.role !== 'assistant') continue;
     recentImages = imageDataUrls(messages[index]);
-    if (recentImages.length) break;
+    if (recentImages.length) {
+      sourceContext = messages[index]?.meta?.imageContext || null;
+      break;
+    }
   }
   const operation = classifyImageRequest(latestUser.content, {
     currentImages: currentImages.length,
@@ -119,7 +124,7 @@ function prepareImageEditingTurn(conversation) {
   const references = currentImages.length ? currentImages : recentImages;
   if (!references.length) return;
 
-  latestUser.content = embedImageEditRequest(latestUser.content, references);
+  latestUser.content = embedImageEditRequest(latestUser.content, references, currentImages.length ? null : sourceContext);
   if (currentImages.length) latestUser.attachments = [];
   latestUser.meta = { ...(latestUser.meta || {}), imageEditPrepared: true, imageReferenceCount: references.length };
 }

@@ -146,6 +146,8 @@ async function withBrowser(executable, url, initScript, assertions) {
   }
 }
 
+export { browserExecutable, freePort, evaluate, waitForExpression, withBrowser };
+
 const supportedVoice = `
   class FakeRecognition {
     constructor() { window.__genesisRecognition = this; (window.__genesisRecognitions ||= []).push(this); }

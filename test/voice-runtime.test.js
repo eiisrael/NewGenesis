@@ -40,6 +40,15 @@ class FakeChild extends EventEmitter {
   }
 }
 
+function withPythonProbe(spawnWorker) {
+  return (command, args, options) => {
+    if (args[0] !== '-I') return spawnWorker(command, args, options);
+    const child = new FakeChild({ emitReady: false });
+    queueMicrotask(() => { child.exitCode = 0; child.emit('exit', 0, null); });
+    return child;
+  };
+}
+
 function ttsWave() {
   const wav = Buffer.alloc(48);
   wav.write('RIFF', 0, 'ascii');
@@ -161,7 +170,7 @@ test('fila TTS serializa requisições concorrentes sem 429 e preserva a ordem',
       child.stdout.write(`${JSON.stringify({ id: payload.id, ok: true })}\n`);
     }
   });
-  const runtime = await new VoiceRuntime({ root: PROJECT_ROOT, dataDir, spawnImpl, backgroundWarmup: false }).init();
+  const runtime = await new VoiceRuntime({ root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false }).init();
   t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
 
   const results = await Promise.all([
@@ -188,7 +197,7 @@ test('cancelamento remove somente o item TTS aguardando e a fila continua', asyn
       child.stdout.write(`${JSON.stringify({ id: payload.id, ok: true })}\n`);
     }
   });
-  const runtime = await new VoiceRuntime({ root: PROJECT_ROOT, dataDir, spawnImpl, backgroundWarmup: false }).init();
+  const runtime = await new VoiceRuntime({ root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false }).init();
   t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
 
   const first = runtime.synthesize({ text: 'primeiro', engine: 'piper' });
@@ -206,6 +215,140 @@ test('cancelamento remove somente o item TTS aguardando e a fila continua', asyn
   assert.deepEqual(requests, ['primeiro', 'terceiro']);
 });
 
+test('Python quebrado não anuncia TTS disponível e não inicia worker ou aquecimento', async t => {
+  const dataDir = await fakeVoiceData(['piper']);
+  let probes = 0;
+  const runtime = await new VoiceRuntime({
+    root: PROJECT_ROOT, dataDir,
+    spawnImpl: (_command, args) => {
+      assert.equal(args[0], '-I');
+      probes += 1;
+      const child = new FakeChild({ emitReady: false });
+      queueMicrotask(() => {
+        child.stderr.write('No Python at C:\\Python314\\python.exe');
+        child.exitCode = 103;
+        child.emit('exit', 103, null);
+      });
+      return child;
+    }
+  }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  assert.equal(runtime.status().tts.piper.available, false);
+  assert.equal(runtime.status().tts.piper.pythonAvailable, false);
+  assert.equal(runtime.status().tts.piper.health, 'unavailable');
+  assert.match(runtime.status().tts.piper.lastError, /No Python/);
+  await assert.rejects(runtime.synthesize({ engine: 'piper', text: 'Teste' }), error => error.code === 'piper_not_installed' && /Python314/.test(error.message));
+  assert.equal(probes, 1);
+});
+
+test('sondagem Python compartilha cache e detecta reparo do venv sem reiniciar', async t => {
+  const dataDir = await fakeVoiceData(['piper']);
+  let probes = 0;
+  let broken = true;
+  const runtime = await new VoiceRuntime({
+    root: PROJECT_ROOT, dataDir, backgroundWarmup: false,
+    spawnImpl: (_command, args) => {
+      assert.equal(args[0], '-I');
+      probes += 1;
+      const child = new FakeChild({ emitReady: false });
+      queueMicrotask(() => {
+        if (broken) child.stderr.write('Dependencias Python ausentes: piper');
+        child.exitCode = broken ? 1 : 0;
+        child.emit('exit', child.exitCode, null);
+      });
+      return child;
+    }
+  }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  await Promise.all([runtime.refreshStatus(), runtime.refreshStatus()]);
+  assert.equal(probes, 1);
+  assert.equal(runtime.status().tts.piper.available, false);
+  broken = false;
+  await fs.writeFile(path.join(dataDir, 'voice', 'venv-piper', 'pyvenv.cfg'), 'home = repaired-python');
+  await Promise.all([runtime.refreshStatus(), runtime.refreshStatus()]);
+  assert.equal(probes, 2);
+  assert.equal(runtime.status().tts.piper.available, true);
+  assert.equal(runtime.status().tts.piper.lastError, undefined);
+});
+
+test('sondagem Python possui timeout e encerra o processo travado', async t => {
+  const dataDir = await fakeVoiceData(['piper']);
+  let child;
+  const runtime = await new VoiceRuntime({
+    root: PROJECT_ROOT, dataDir, backgroundWarmup: false, timeouts: { pythonProbe: 20 },
+    spawnImpl: () => (child = new FakeChild({ emitReady: false }))
+  }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  assert.equal(runtime.status().tts.piper.available, false);
+  assert.match(runtime.status().tts.piper.lastError, /limite de tempo/);
+  assert.equal(child.stdin.writable, false);
+});
+
+test('cache TTS reutiliza falas concorrentes e isola engine, voz, preset e velocidade', async t => {
+  const dataDir = await fakeVoiceData(['piper', 'kokoro']);
+  const requests = [];
+  const spawnImpl = () => new FakeChild({
+    onRequest: async (payload, child) => {
+      requests.push(payload);
+      await fs.writeFile(payload.output, ttsWave());
+      child.stdout.write(`${JSON.stringify({ id: payload.id, ok: true })}\n`);
+    }
+  });
+  const runtime = await new VoiceRuntime({ root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const input = { text: 'Olá, Gênesis.', engine: 'kokoro', voice: 'pf_dora', rate: 1, preset: 'natural' };
+  const [first, reused] = await Promise.all([runtime.synthesize(input), runtime.synthesize(input)]);
+  assert.equal(requests.length, 1);
+  assert.equal(first.processMode, 'persistent-worker');
+  assert.equal(reused.processMode, 'memory-cache');
+  first.audio.fill(0);
+  reused.audio.fill(0);
+  assert.equal((await runtime.synthesize(input)).audio.toString('ascii', 0, 4), 'RIFF');
+  for (const changed of [{ engine: 'piper' }, { voice: 'pm_alex' }, { preset: 'calm' }, { rate: 1.2 }, { text: 'Outro pedido.' }]) {
+    assert.equal((await runtime.synthesize({ ...input, ...changed })).processMode, 'persistent-worker');
+  }
+  assert.equal(requests.length, 6);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(runtime.synthesize(input, { signal: controller.signal }), error => error.code === 'request_cancelled');
+  await runtime.flush();
+  assert.equal(runtime.ttsCacheBytes, 0);
+});
+
+test('cache TTS expira, limita bytes e remove a fala menos recentemente usada', async t => {
+  const dataDir = await fakeVoiceData(['piper']);
+  const requests = [];
+  const spawnImpl = () => new FakeChild({
+    onRequest: async (payload, child) => {
+      requests.push(payload.text);
+      await fs.writeFile(payload.output, ttsWave());
+      child.stdout.write(`${JSON.stringify({ id: payload.id, ok: true })}\n`);
+    }
+  });
+  const runtime = await new VoiceRuntime({
+    root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false,
+    ttsCache: { maxBytes: 96, maxEntries: 2, ttlMs: 60_000 }
+  }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  const speak = text => runtime.synthesize({ text, engine: 'piper' });
+  await speak('um');
+  await speak('dois');
+  assert.equal((await speak('um')).processMode, 'memory-cache');
+  await speak('três');
+  assert.equal((await speak('um')).processMode, 'memory-cache');
+  await speak('dois');
+  assert.deepEqual(requests, ['um', 'dois', 'três', 'dois']);
+  assert.ok(runtime.ttsCacheBytes <= 96);
+
+  runtime.ttsCacheLimits.ttlMs = 1;
+  await speak('expira');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal((await speak('expira')).processMode, 'persistent-worker');
+  runtime.ttsCacheLimits.maxBytes = 0;
+  await speak('sem cache');
+  assert.equal((await speak('sem cache')).processMode, 'persistent-worker');
+});
+
 test('deadline TTS é absoluto entre inicialização e síntese', async t => {
   const dataDir = await fakeVoiceData(['piper']);
   const spawnImpl = () => new FakeChild({
@@ -217,7 +360,7 @@ test('deadline TTS é absoluto entre inicialização e síntese', async t => {
     }
   });
   const runtime = await new VoiceRuntime({
-    root: PROJECT_ROOT, dataDir, spawnImpl, backgroundWarmup: false,
+    root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false,
     timeouts: { tts: { piper: 70 }, ttsStartup: { piper: 60 } }
   }).init();
   t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
@@ -227,12 +370,33 @@ test('deadline TTS é absoluto entre inicialização e síntese', async t => {
   assert.ok(performance.now() - started < 115, 'o runtime não deve conceder um segundo timeout completo à síntese');
 });
 
+test('Kokoro reserva tempo de carga a frio e preserva o limite curto quando pronto', async t => {
+  const dataDir = await fakeVoiceData(['kokoro']);
+  const spawnImpl = () => new FakeChild({
+    readyDelay: 100,
+    onRequest: async (payload, child) => {
+      if (payload.text === 'travado') return;
+      await fs.writeFile(payload.output, ttsWave());
+      child.stdout.write(`${JSON.stringify({ id: payload.id, ok: true })}\n`);
+    }
+  });
+  const runtime = await new VoiceRuntime({
+    root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false,
+    timeouts: { tts: { kokoro: 60 }, ttsStartup: { kokoro: 500 } }
+  }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+  assert.equal((await runtime.synthesize({ text: 'frio', engine: 'kokoro' })).processMode, 'persistent-worker');
+  const started = performance.now();
+  await assert.rejects(runtime.synthesize({ text: 'travado', engine: 'kokoro' }), error => error.code === 'voice_tts_timeout');
+  assert.ok(performance.now() - started < 300, 'worker pronto não recebe o orçamento de carregamento');
+});
+
 test('Kokoro entra em cooldown após falhar frio e não reinicia em loop', async t => {
   const dataDir = await fakeVoiceData(['kokoro']);
   let spawns = 0;
   const spawnImpl = () => { spawns += 1; return new FakeChild({ emitReady: false }); };
   const runtime = await new VoiceRuntime({
-    root: PROJECT_ROOT, dataDir, spawnImpl, backgroundWarmup: false,
+    root: PROJECT_ROOT, dataDir, spawnImpl: withPythonProbe(spawnImpl), backgroundWarmup: false,
     timeouts: { tts: { kokoro: 35 }, ttsStartup: { kokoro: 30 }, kokoroCooldown: 1_000 }
   }).init();
   t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
@@ -308,4 +472,32 @@ test('cancelar STT encerra a inferência ativa e libera imediatamente o próximo
   const second = await runtime.transcribe(speechWave(), { quality: 'rapid' });
   assert.equal(second.text, 'segunda fala');
   assert.ok(spawns >= 2);
+});
+
+test('Whisper desativa flash attention no servidor e no fallback CLI para evitar crash nativo', async t => {
+  const dataDir = await fakeVoiceData(['whisper']);
+  const calls = [];
+  const spawnImpl = (command, args) => {
+    calls.push({ command, args });
+    const child = new FakeChild({ emitReady: false });
+    if (args.includes('-of')) {
+      fs.writeFile(`${args[args.indexOf('-of') + 1]}.json`, JSON.stringify({ text: 'fala local' }))
+        .then(() => { child.exitCode = 0; child.emit('exit', 0, null); })
+        .catch(error => child.emit('error', error));
+    }
+    return child;
+  };
+  const runtime = await new VoiceRuntime({
+    root: PROJECT_ROOT, dataDir, spawnImpl, backgroundWarmup: false,
+    fetchImpl: async () => new Response(JSON.stringify({ text: 'fala local' }), { status: 200 })
+  }).init();
+  t.after(async () => { await runtime.flush(); await fs.rm(dataDir, { recursive: true, force: true }); });
+
+  assert.equal((await runtime.transcribe(speechWave())).processMode, 'persistent-server');
+  runtime.whisperCooldownUntil = Date.now() + 10_000;
+  assert.equal((await runtime.transcribe(speechWave())).processMode, 'cli-cooldown');
+  assert.equal(calls.length, 2);
+  for (const { args } of calls) {
+    assert.ok(args.includes('-nfa'));
+  }
 });

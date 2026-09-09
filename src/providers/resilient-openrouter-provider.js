@@ -1,6 +1,6 @@
 import { OpenAICompatibleProvider } from './openai-compatible-provider.js';
 import { assertFreeOpenRouterModels } from '../core/policy.js';
-import { ProviderError } from '../core/errors.js';
+import { ProviderError, retryAfterMilliseconds } from '../core/errors.js';
 import { sanitizeModelText } from '../core/content-sanitizer.js';
 import { isProjectMutationTool, isProjectReadTool } from '../core/project-tool-policy.js';
 
@@ -37,13 +37,8 @@ function callSignature(name, args) {
 
 function routeCooldown(error, headers = null) {
   if (headers) {
-    const retryAfter = headers.get('retry-after');
-    if (retryAfter) {
-      const seconds = parseInt(retryAfter, 10);
-      if (!isNaN(seconds) && seconds > 0) {
-        return Math.min(5 * 60 * 1000, Math.max(1000, seconds * 1000));
-      }
-    }
+    const retryAfter = retryAfterMilliseconds(headers.get('retry-after'));
+    if (retryAfter > 0) return Math.max(1000, retryAfter);
     const resetRequests = headers.get('x-ratelimit-reset-requests');
     const resetTokens = headers.get('x-ratelimit-reset-tokens');
     if (resetRequests) {
@@ -55,7 +50,7 @@ function routeCooldown(error, headers = null) {
       if (ms > 0 && ms < 5 * 60 * 1000) return ms;
     }
   }
-  if (error?.retryAfterMs) return Math.min(10 * 60 * 1000, Math.max(1000, error.retryAfterMs));
+  if (error?.retryAfterMs > 0) return Math.max(1000, error.retryAfterMs);
   return {
     quota: 30000,
     timeout: 30000,

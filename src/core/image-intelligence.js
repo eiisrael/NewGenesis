@@ -33,11 +33,12 @@ function unique(values, limit = 10) {
 
 export function inferImageStyle(prompt) {
   const text = fold(prompt);
-  if (/\b(realista|realistico|fotorealista|fotografia|foto real|photoreal|realistic|photograph|cinematic photo)\b/.test(text)) return 'photorealistic';
+  if (/\b(realista|realistico|fotorealista|fotorrealista|foto real|photoreal|photorealistic|realistic|cinematic photo)\b/.test(text)) return 'photorealistic';
   if (/\b(anime|manga|ghibli)\b/.test(text)) return 'anime';
   if (/\b(3d|render|pixar|unreal|blender)\b/.test(text)) return '3d';
   if (/\b(logo|logomarca|icone|icon|marca|brand)\b/.test(text)) return 'graphic-design';
   if (/\b(aquarela|watercolor|ilustracao|illustration|desenho|drawing|pintura|painting)\b/.test(text)) return 'illustration';
+  if (/\b(foto|fotografia|fotografico|fotografica|photo|photograph|photography)\b/.test(text)) return 'photorealistic';
   return 'general';
 }
 
@@ -51,6 +52,12 @@ export function inferImageAspectRatio(prompt) {
   return '1:1';
 }
 
+export function imageMemoryStyle(memory = '') {
+  const text = fold(memory).split('memorias de projeto (suprememind)')[0];
+  const preferences = [...text.matchAll(/\bimagens (com realismo fotografico|em aquarela|em estilo anime)\b/g)];
+  return ({ 'com realismo fotografico': 'photorealistic', 'em aquarela': 'watercolor', 'em estilo anime': 'anime' })[preferences.at(-1)?.[1]] || '';
+}
+
 function mandatoryHints(prompt) {
   const raw = clean(prompt, 2000);
   const hints = [raw];
@@ -62,7 +69,7 @@ function mandatoryHints(prompt) {
 }
 
 function stylePrompt(style) {
-  if (style === 'photorealistic') return 'Photorealistic professional photography, natural anatomy and proportions, realistic materials and textures, physically plausible lighting, sharp subject detail, believable depth of field.';
+  if (style === 'photorealistic') return 'Photorealistic photography, natural anatomy and proportions, authentic skin or surface microtexture with subtle imperfections, realistic materials, consistent shadows and physically plausible lighting, believable perspective and depth of field. Avoid excessive smoothing, artificial gloss, oversharpening and exaggerated HDR.';
   if (style === 'anime') return 'High quality anime illustration, clean linework, coherent anatomy, expressive composition, polished lighting and color design.';
   if (style === '3d') return 'High quality 3D render, coherent geometry, realistic materials, polished global illumination, detailed surfaces and professional composition.';
   if (style === 'graphic-design') return 'Professional graphic design, clean geometry, strong visual hierarchy, intentional typography when requested, balanced negative space and production-ready finish.';
@@ -70,27 +77,37 @@ function stylePrompt(style) {
   return 'High quality image, coherent composition, accurate requested objects, clear visual hierarchy, detailed finish and intentional lighting.';
 }
 
-function defaultNegative(style) {
+function defaultNegative(style, prompt = '') {
   const base = 'blurry, low resolution, low quality, bad anatomy, deformed, malformed, duplicate subject, extra limbs, missing limbs, cropped important object, unreadable text, watermark, signature, jpeg artifacts';
-  if (style === 'photorealistic') return `${base}, cartoon, anime, illustration, painting, plastic toy, plush toy, doll, artificial fur, uncanny face`;
+  if (style === 'photorealistic') {
+    const toy = /\b(brinquedo|bonec[oa]|pelucia|toy|doll|plush)\b/.test(fold(prompt));
+    return `${base}, cartoon, anime, illustration, painting${toy ? '' : ', plastic toy, plush toy, doll, artificial fur'}, uncanny face`;
+  }
   if (style === 'graphic-design') return `${base}, clutter, random mockup, illegible typography, warped letters, accidental gradients`;
   return base;
 }
 
 export function fallbackImagePlan(request = {}) {
   const originalPrompt = clean(request.prompt, 2400);
-  const style = inferImageStyle(originalPrompt);
-  const aspectRatio = inferImageAspectRatio(originalPrompt);
-  const mustInclude = mandatoryHints(originalPrompt);
   const operation = request.operation === 'edit' ? 'edit' : 'create';
+  const sourceContext = operation === 'edit' ? request.sourceContext : null;
+  const detectedStyle = inferImageStyle(originalPrompt);
+  const preferredStyle = request.preferredStyle === 'watercolor' ? 'illustration'
+    : ['photorealistic', 'illustration', 'anime'].includes(request.preferredStyle) ? request.preferredStyle : '';
+  const style = detectedStyle === 'general' ? sourceContext?.style || preferredStyle || detectedStyle : detectedStyle;
+  const preferredMedium = detectedStyle === 'general' && !sourceContext?.style && request.preferredStyle === 'watercolor' ? 'Use watercolor painting with natural pigment and paper texture.' : '';
+  const specifiesAspect = /\b(?:\d+\s*:\s*\d+|story|stories|reels?|tiktok|vertical|retrato|portrait|banner|capa|youtube|horizontal|paisagem|landscape|widescreen|quadrad\w*|square)\b/.test(fold(originalPrompt));
+  const aspectRatio = !specifiesAspect && ASPECT_RATIOS.has(sourceContext?.aspectRatio)
+    ? sourceContext.aspectRatio : inferImageAspectRatio(originalPrompt);
+  const mustInclude = mandatoryHints(originalPrompt);
   const preservation = operation === 'edit'
     ? 'Preserve the identity, pose, framing and all unrequested details from the reference image; change only what the user explicitly requested.'
     : 'Do not omit any concrete subject, accessory, color, count, action or relationship explicitly requested by the user.';
   return {
     operation,
     originalPrompt,
-    prompt: clean(`${originalPrompt}. ${preservation} ${stylePrompt(style)} The final image must satisfy the original user request exactly.`, 3400),
-    negativePrompt: defaultNegative(style),
+    prompt: clean(`${originalPrompt}. ${preservation} ${stylePrompt(style)} ${preferredMedium} The final image must satisfy the original user request exactly.`, 3400),
+    negativePrompt: defaultNegative(style, originalPrompt),
     mustInclude,
     style,
     aspectRatio,
@@ -111,6 +128,7 @@ export function imagePlannerMessages(request = {}) {
         'Never remove, weaken or reinterpret concrete requirements such as subjects, accessories, counts, colors, actions, written text, realism or composition.',
         'Accessories and relationships introduced by words such as "com" or "with" are mandatory, not optional.',
         'For edits, preserve the reference image identity and every detail the user did not ask to change.',
+        'Respect detected style and medium inherited from visual preferences or the reference unless the current request explicitly changes them.',
         'Return ONLY valid JSON with keys: prompt, negativePrompt, mustInclude, style, aspectRatio.',
         'mustInclude must be an array of short, independently visible requirements. aspectRatio must be one of 1:1,16:9,9:16,4:3,3:4,3:2,2:3,4:5,5:4.'
       ].join(' ')
@@ -121,8 +139,10 @@ export function imagePlannerMessages(request = {}) {
         operation: fallback.operation,
         originalRequest: fallback.originalPrompt,
         detectedStyle: fallback.style,
+        detectedMedium: fallback.prompt.includes('Use watercolor painting') ? 'watercolor' : null,
         detectedAspectRatio: fallback.aspectRatio,
-        localMandatoryHints: fallback.mustInclude
+        localMandatoryHints: fallback.mustInclude,
+        sourceContext: request.operation === 'edit' ? request.sourceContext || null : null
       })
     }
   ];
@@ -140,17 +160,21 @@ export function parseImagePlanResponse(value, request = {}) {
   const fallback = fallbackImagePlan(request);
   const payload = parseJsonObject(value);
   if (!payload) return fallback;
+  if (fallback.style !== 'general' && payload.style && payload.style !== fallback.style) return fallback;
   const plannedPrompt = clean(payload.prompt, 3000);
   const negativePrompt = clean(payload.negativePrompt, 1400) || fallback.negativePrompt;
   const mustInclude = unique([
     ...fallback.mustInclude,
     ...(Array.isArray(payload.mustInclude) ? payload.mustInclude : [])
   ], 10);
-  const aspectRatio = ASPECT_RATIOS.has(String(payload.aspectRatio || '').trim())
+  const explicitAspect = /\b(?:\d+\s*:\s*\d+|vertical|horizontal|retrato|portrait|paisagem|landscape|banner|capa|story|stories|reels?|tiktok|youtube|quadrad\w*|square)\b/.test(fold(fallback.originalPrompt));
+  const aspectRatio = !explicitAspect && !request.sourceContext?.aspectRatio && ASPECT_RATIOS.has(String(payload.aspectRatio || '').trim())
     ? String(payload.aspectRatio).trim()
     : fallback.aspectRatio;
-  const style = clean(payload.style, 60) || fallback.style;
-  const prompt = clean(`${plannedPrompt || fallback.prompt} Mandatory original request: ${fallback.originalPrompt}. Do not omit: ${mustInclude.join('; ')}.`, 3600);
+  const style = fallback.style !== 'general' ? fallback.style
+    : ['photorealistic', 'anime', '3d', 'graphic-design', 'illustration', 'general'].includes(payload.style) ? payload.style : fallback.style;
+  const medium = fallback.prompt.includes('Use watercolor painting') ? 'Use watercolor painting with natural pigment and paper texture.' : '';
+  const prompt = clean(`Mandatory original request: ${fallback.originalPrompt}. ${medium} ${plannedPrompt || fallback.prompt} Do not omit: ${mustInclude.join('; ')}.`, 3600);
   return {
     ...fallback,
     prompt,

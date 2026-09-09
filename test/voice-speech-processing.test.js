@@ -52,6 +52,26 @@ test('chunks longos são quebrados em pausas sem exceder o teto', () => {
   assert.ok(chunks.every(chunk => chunk.length <= 120));
 });
 
+test('fronteiras de fala preservam decimais, siglas, abreviações e marcadores de lista', () => {
+  const text = 'A Dra. Ana pagou R$ 1.234,56 e mediu 3.14. A API respondeu.';
+  assert.deepEqual(takeStableSentences(text, { flush: true }).chunks, [text]);
+  assert.deepEqual(takeStableSentences('Fale com a Dra. ').chunks, []);
+  assert.deepEqual(takeStableSentences('O U.S.A. ').chunks, []);
+  assert.deepEqual(takeStableSentences('1. ').chunks, []);
+  const split = takeStableSentences('A Dra. Ana chegou. Aguarde');
+  assert.deepEqual(split, { chunks: ['A Dra. Ana chegou.'], rest: 'Aguarde' });
+  assert.equal(normalizeSpokenText('1.234.567 pessoas, versão v2.3.1 e API.'), '1.234.567 pessoas, versão 2 ponto 3 ponto 1 e A P I.');
+});
+
+test('tokens sem espaços respeitam o teto sem perder ou acrescentar caracteres', () => {
+  const text = 'abcdefghijklmnopqrstuvwxyz';
+  for (const maxChunk of [1, 4, 10]) {
+    const { chunks } = takeStableSentences(text, { flush: true, maxChunk });
+    assert.ok(chunks.every(chunk => chunk.length <= maxChunk));
+    assert.equal(chunks.join(''), text);
+  }
+});
+
 test('similaridade identifica provável retorno acústico', () => {
   assert.ok(similarityToPlayback('Genesis encontrou três causas possíveis', 'O Genesis encontrou três causas possíveis para o problema.') > 0.7);
   assert.ok(similarityToPlayback('quero fazer outra pergunta', 'O Genesis encontrou três causas possíveis.') < 0.3);

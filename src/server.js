@@ -51,7 +51,7 @@ const securityHeaders = {
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
-  'permissions-policy': 'camera=(), microphone=(self), geolocation=(), payment=()'
+  'permissions-policy': 'camera=(), microphone=(self), bluetooth=(self), geolocation=(), payment=()'
 };
 
 function setSecurityHeaders(response) {
@@ -1318,6 +1318,42 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
           return response.end(body);
         }
 
+        if (segments.length === 4 && segments[3] === 'device-actions' && request.method === 'POST') {
+          assertTrustedMutation(request);
+          if (!allowChatRequest(request, 30)) return sendJson(response, 429, { error: { code: 'chat_rate_limit', message: 'Limite local de mensagens atingido. Aguarde um minuto.' } });
+          if (activeConversations.has(id)) return sendJson(response, 409, { error: { code: 'conversation_busy', message: 'O Genesis já está processando esta conversa.' } });
+          activeConversations.add(id);
+          try {
+            const body = await readJson(request, 32_768);
+            const content = typeof body?.content === 'string' ? body.content.trim() : '';
+            const result = body?.result;
+            const allowed = ['status', 'battery', 'info', 'disconnect', 'connect', 'help', 'custom-read', 'custom-write'];
+            if (!content || content.length > Math.min(8_000, config.maxMessageCharacters || 8_000)
+              || !allowed.includes(result?.action) || typeof result?.ok !== 'boolean'
+              || typeof result?.content !== 'string' || !result.content.trim() || result.content.length > 8_000) {
+              return sendJson(response, 400, { error: { code: 'invalid_device_action', message: 'Resultado Bluetooth local inválido.' } });
+            }
+            const inputMetadata = sanitizeInputMetadata(body.inputMetadata);
+            await store.addMessage(id, {
+              role: 'user', content,
+              meta: { tokenEstimate: estimateMessageTokens({ content }), tokenAccuracy: 'estimated', ...(inputMetadata.inputMode === 'voice' ? { input: inputMetadata } : {}) }
+            });
+            await store.addMessage(id, {
+              role: 'assistant', content: result.content.trim(),
+              meta: {
+                providerId: 'genesis-local', provider: 'Genesis Local', model: 'web-bluetooth', freeVerified: true,
+                deviceAction: { action: result.action, ok: result.ok, source: 'client-bluetooth', deviceName: String(result.deviceName || '').slice(0, 120) },
+                usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, requestCount: 0, accuracy: 'local' }
+              }
+            });
+            orchestrator.invalidateContext?.(id);
+            telemetry.emit({ category: 'device', type: 'bluetooth.action.reported', title: 'Resultado Bluetooth recebido do navegador', conversationId: id, level: result.ok ? 'success' : 'warning', meta: { action: result.action, source: 'client-bluetooth' } });
+            return sendJson(response, 201, { conversation: publicConversation(store.getConversation(id)) });
+          } finally {
+            activeConversations.delete(id);
+          }
+        }
+
         if (segments[3] === 'notices' && request.method === 'POST') {
           assertTrustedMutation(request);
           const body = await readJson(request);
@@ -1485,7 +1521,7 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               signal: generationController.signal,
               projectContext,
               supremeMind: activeSupremeMind,
-              userMemoryContext: await userMemory.context(content),
+              userMemoryContext: await userMemory.context(content, { supremeMind: activeSupremeMind }),
               interfaceLanguage,
               turnContext: formatTurnContext(inputMetadata),
               taskContract,
@@ -1522,6 +1558,11 @@ export function createHandler({ config, store, orchestrator, telemetry, settings
               attempts: result.attempts,
               freeVerified: result.freeVerified,
               task: result.task || taskContract,
+              ...(result.imagePlan ? { imageContext: {
+                originalPrompt: String(result.imagePlan.originalPrompt || '').slice(0, 4_000),
+                style: result.imagePlan.style,
+                aspectRatio: result.imagePlan.aspectRatio
+              } } : {}),
               verification: result.verification || result.context?.verification || null
             };
             const generatedAttachments = result.generatedImages?.length

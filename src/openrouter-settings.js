@@ -33,6 +33,7 @@ export class OpenRouterSettings {
     this.key = '';
     this.persisted = false;
     this.source = null;
+    this.loadError = null;
   }
 
   async init() {
@@ -56,7 +57,9 @@ export class OpenRouterSettings {
       this.persisted = true;
       this.source = 'vault';
     } catch (error) {
-      if (error.code !== 'ENOENT') await fs.rm(this.vaultFile, { force: true });
+      if (error.code !== 'ENOENT' || await fs.access(this.vaultFile).then(() => true, () => false)) {
+        this.loadError = { code: 'vault_unreadable', message: 'Não foi possível abrir a chave salva. O cofre foi preservado; reconecte a chave nas configurações.' };
+      }
       if (this.environmentKey) {
         this.key = validateOpenRouterKey(this.environmentKey);
         this.source = 'environment';
@@ -66,12 +69,13 @@ export class OpenRouterSettings {
     return this;
   }
 
-  async masterKey() {
+  async masterKey({ create = true } = {}) {
     try {
       const value = Buffer.from((await fs.readFile(this.masterKeyFile, 'utf8')).trim(), 'base64');
       if (value.length === 32) return value;
+      throw new Error('Chave do cofre local inválida.');
     } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      if (error.code !== 'ENOENT' || !create) throw error;
     }
     const value = crypto.randomBytes(32);
     try {
@@ -98,7 +102,7 @@ export class OpenRouterSettings {
 
   async decrypt(payload) {
     if (payload?.version !== 1 || payload?.algorithm !== 'aes-256-gcm') throw new Error('Cofre local incompatível.');
-    const decipher = crypto.createDecipheriv('aes-256-gcm', await this.masterKey(), Buffer.from(payload.iv, 'base64'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', await this.masterKey({ create: false }), Buffer.from(payload.iv, 'base64'));
     decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
     return Buffer.concat([decipher.update(Buffer.from(payload.ciphertext, 'base64')), decipher.final()]).toString('utf8');
   }
@@ -112,6 +116,7 @@ export class OpenRouterSettings {
     this.key = key;
     this.persisted = Boolean(persist);
     this.source = persist ? 'vault' : 'session';
+    this.loadError = null;
     if (persist) {
       await atomicWrite(this.vaultFile, `${JSON.stringify(await this.encrypt(key), null, 2)}\n`);
     } else {
@@ -133,6 +138,7 @@ export class OpenRouterSettings {
     this.key = '';
     this.persisted = false;
     this.source = null;
+    this.loadError = null;
     await fs.rm(this.vaultFile, { force: true });
   }
 
@@ -149,6 +155,7 @@ export class OpenRouterSettings {
       configured: Boolean(this.key),
       persisted: this.persisted,
       source: this.source,
+      ...(this.loadError ? { error: this.loadError } : {}),
       selectionMode: this.preferences.selectionMode,
       selectedModel: this.preferences.selectedModel,
       account: account ? {

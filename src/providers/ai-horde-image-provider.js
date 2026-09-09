@@ -1,5 +1,7 @@
 import { ProviderError } from '../core/errors.js';
 import { parseImageGenerationRequest } from '../core/image-request.js';
+import { estimateRequestTokens } from '../core/context-engine.js';
+import { InferenceBudget, createUsageLedger, recordUsage, finalUsage } from '../core/request-budget.js';
 import {
   fallbackImagePlan,
   hordePrompt,
@@ -114,6 +116,9 @@ export class AIHordeImageProvider {
     this.generationTimeoutMs = Number(options.generationTimeoutMs || 180000);
     this.pollIntervalMs = Number(options.pollIntervalMs || 1500);
     this.clientAgent = String(options.clientAgent || 'NewGenesis:https://github.com/eiisrael/NewGenesis');
+    this.handlesRequestBudget = true;
+    this.modelCatalog = null;
+    this.modelCatalogAt = 0;
   }
 
   headers(json = false) {
@@ -124,13 +129,16 @@ export class AIHordeImageProvider {
     };
   }
 
-  async requestJson(path, options = {}, externalSignal) {
+  async requestJson(path, options = {}, externalSignal, deadlineAt = null) {
+    if (deadlineAt && Date.now() >= deadlineAt) throw new ProviderError('O tempo disponível para gerar a imagem foi atingido.', {
+      providerId: this.id, category: 'timeout', code: 'task_deadline_exceeded', retryable: false
+    });
     let response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...options,
         headers: { ...this.headers(Boolean(options.body)), ...(options.headers || {}) },
-        signal: combinedSignal(externalSignal, this.requestTimeoutMs)
+        signal: combinedSignal(externalSignal, Math.min(this.requestTimeoutMs, (deadlineAt || Infinity) - Date.now()))
       });
     } catch (error) {
       if (externalSignal?.aborted || error?.code === 'request_cancelled') {
@@ -167,9 +175,14 @@ export class AIHordeImageProvider {
     } catch { /* cancelamento remoto é melhor esforço */ }
   }
 
-  async availableModels(signal, plan = {}) {
+  async availableModels(signal, plan = {}, deadlineAt = null) {
     try {
-      const models = await this.requestJson('/status/models?type=image', {}, signal);
+      if (!this.modelCatalog || Date.now() - this.modelCatalogAt >= 30000) {
+        const catalog = await this.requestJson('/status/models?type=image', {}, signal, deadlineAt);
+        this.modelCatalog = Array.isArray(catalog) ? catalog : [];
+        this.modelCatalogAt = Date.now();
+      }
+      const models = this.modelCatalog;
       return (Array.isArray(models) ? models : [])
         .filter(model => Number(model?.count || 0) > 0 && model?.name)
         .filter(model => !/nsfw|hentai|nude|furry/i.test(String(model.name)))
@@ -177,12 +190,12 @@ export class AIHordeImageProvider {
         .slice(0, 3)
         .map(model => String(model.name));
     } catch (error) {
-      if (signal?.aborted || error?.code === 'request_cancelled') throw error;
+      if (signal?.aborted || ['request_cancelled', 'task_deadline_exceeded'].includes(error?.code)) throw error;
       return ['stable_diffusion'];
     }
   }
 
-  async generateImage({ prompt, plan = null, signal, onAttempt = () => {} }) {
+  async generateImage({ prompt, plan = null, signal, onAttempt = () => {}, requestBudget = null, usageLedger = null, deadlineAt = null }) {
     const request = parseImageGenerationRequest(prompt);
     const activePlan = plan && typeof plan === 'object'
       ? { ...fallbackImagePlan(request), ...plan, references: plan.references || request.references }
@@ -201,15 +214,20 @@ export class AIHordeImageProvider {
     }
 
     const started = Date.now();
+    const generationDeadline = Math.min(deadlineAt || Infinity, started + this.generationTimeoutMs);
+    const budget = requestBudget || new InferenceBudget(1);
+    const ledger = usageLedger || createUsageLedger();
     let requestId = null;
-    const models = await this.availableModels(signal, activePlan);
-    onAttempt({
-      id: models[0] || 'community-auto',
-      name: activePlan.operation === 'edit'
-        ? `Modelos comunitários img2img · ${models[0] || 'automático'}`
-        : `Modelo comunitário · ${models[0] || 'automático'}`
-    }, 1);
+    let requestNumber = null;
+    let estimatedInputTokens = 0;
     try {
+      const models = await this.availableModels(signal, activePlan, generationDeadline);
+      onAttempt({
+        id: models[0] || 'community-auto',
+        name: activePlan.operation === 'edit'
+          ? `Modelos comunitários img2img · ${models[0] || 'automático'}`
+          : `Modelo comunitário · ${models[0] || 'automático'}`
+      }, 1);
       const dimensions = imageDimensionsForPlan(activePlan);
       const params = {
         n: 1,
@@ -240,10 +258,23 @@ export class AIHordeImageProvider {
         body.source_image = reference;
         body.source_processing = 'img2img';
       }
+      if (signal?.aborted) throw new ProviderError('Solicitação interrompida pelo usuário.', {
+        providerId: this.id, category: 'cancelled', code: 'request_cancelled', retryable: false
+      });
+      if (Date.now() >= generationDeadline) throw new ProviderError('O tempo disponível para gerar a imagem foi atingido.', {
+        providerId: this.id, category: 'timeout', code: 'task_deadline_exceeded', retryable: false
+      });
+      estimatedInputTokens = estimateRequestTokens([{ role: 'user', content: [
+        { type: 'text', text: normalizedPrompt },
+        ...(activePlan.references || []).map(url => ({ type: 'image_url', image_url: { url } }))
+      ] }]);
+      requestNumber = budget.consume({
+        providerId: this.id, model: models[0] || 'community-auto', kind: 'image_generation', estimatedInputTokens
+      });
       const queued = await this.requestJson('/generate/async', {
         method: 'POST',
         body: JSON.stringify(body)
-      }, signal);
+      }, signal, generationDeadline);
       requestId = String(queued.id || '');
       if (!/^[a-zA-Z0-9-]{8,80}$/.test(requestId)) {
         throw new ProviderError('A fila gratuita não confirmou o pedido de imagem.', {
@@ -251,9 +282,12 @@ export class AIHordeImageProvider {
         });
       }
 
-      while (Date.now() - started < this.generationTimeoutMs) {
-        await wait(this.pollIntervalMs, signal);
-        const progress = await this.requestJson(`/generate/check/${encodeURIComponent(requestId)}`, {}, signal);
+      let polls = 0;
+      while (Date.now() < generationDeadline) {
+        const pollDelay = Math.min(10000, this.pollIntervalMs * (1 + Math.floor(polls / 4)), generationDeadline - Date.now());
+        await wait(Math.max(1, pollDelay), signal);
+        const progress = await this.requestJson(`/generate/check/${encodeURIComponent(requestId)}`, {}, signal, generationDeadline);
+        polls += 1;
         if (progress.faulted) {
           throw new ProviderError('A tarefa de imagem falhou na rede comunitária.', {
             providerId: this.id, category: 'availability', code: 'community_image_faulted'
@@ -266,7 +300,7 @@ export class AIHordeImageProvider {
         }
         if (!progress.done) continue;
 
-        const status = await this.requestJson(`/generate/status/${encodeURIComponent(requestId)}`, {}, signal);
+        const status = await this.requestJson(`/generate/status/${encodeURIComponent(requestId)}`, {}, signal, generationDeadline);
         const generation = Array.isArray(status.generations) ? status.generations.find(item => item?.state === 'ok' && !item?.censored) : null;
         if (!generation?.img) {
           throw new ProviderError('A rede comunitária não devolveu uma imagem segura.', {
@@ -275,6 +309,7 @@ export class AIHordeImageProvider {
         }
         const image = imagePayload(generation.img);
         const model = String(generation.model || models[0] || 'modelo comunitário');
+        recordUsage(ledger, {}, { inputTokens: estimatedInputTokens }, { requestNumber, providerId: this.id, model });
         return {
           content: activePlan.operation === 'edit'
             ? 'Imagem editada pelo Gênesis usando a referência enviada e uma rota comunitária gratuita.'
@@ -293,7 +328,7 @@ export class AIHordeImageProvider {
           finishReason: 'stop',
           attempts: [],
           generationMetadata: Array.isArray(generation.gen_metadata) ? generation.gen_metadata : [],
-          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+          usage: finalUsage(ledger, budget)
         };
       }
       throw new ProviderError('A fila gratuita de imagens excedeu o tempo máximo de espera.', {
@@ -301,6 +336,7 @@ export class AIHordeImageProvider {
       });
     } catch (error) {
       if (requestId) await this.cancel(requestId);
+      error.usage = finalUsage(ledger, budget);
       throw error;
     }
   }
