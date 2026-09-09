@@ -80,3 +80,34 @@ test('JSON textual de write_project_files também vira chamada de ferramenta', (
   const args = JSON.parse(result.toolCalls[0].function.arguments);
   assert.equal(args.files.length, 3);
 });
+
+test('regressão: conteúdo com quebras de linha perdidas como letras n nunca é gravado', () => {
+  const content = JSON.stringify({
+    command: 'write_project_files',
+    files: [
+      {
+        path: 'index.html',
+        content: "<!DOCTYPE html>n<html lang='pt-BR'>n<head>n<meta charset='UTF-8'>n<title>Versículos</title>n<link rel='stylesheet' href='style.css'>n</head>n<body>n<div class='container'>n<h1>Versículo do Dia</h1>n<button id='new-verse'>Outro Versículo</button>n<script src='script.js'></script>n</body>n</html>"
+      },
+      {
+        path: 'style.css',
+        content: '/* Reset */n*{nmargin:0;npadding:0;nbox-sizing:border-box;n}nbody{nmin-height:100vh;ndisplay:flex;nalign-items:center;njustify-content:center;n}n.container{npadding:30px;nborder-radius:12px;n}'
+      },
+      {
+        path: 'script.js',
+        content: "// Lista de versículosnconst verses = [{ text: 'Teste' }];nfunction showRandomVerse() {nconst verse = verses[0];ndocument.body.dataset.verse = verse.text;n}ndocument.getElementById('new-verse').addEventListener('click', showRandomVerse);nwindow.addEventListener('DOMContentLoaded', showRandomVerse);"
+      }
+    ]
+  });
+
+  const result = recoverRequiredProjectToolCall({
+    result: { content, toolCalls: [], finishReason: 'stop' },
+    tools: [batchTool],
+    messages: [{ role: 'user', content: userPrompt }]
+  });
+
+  assert.deepEqual(result.toolCalls, []);
+  assert.equal(result.toolRecovery, 'rejected-collapsed-newlines');
+  assert.match(result.toolRecoveryRejected, /quebras de linha/i);
+  assert.match(result.toolRecoveryRejected, /index\.html|style\.css|script\.js/i);
+});
