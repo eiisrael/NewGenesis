@@ -14,7 +14,9 @@ function assertServiceContract(contract) {
   assert.equal(contract.toolPolicy.strategy, 'direct_service');
   assert.equal(contract.toolPolicy.mutationIntent, 'create_project');
   assert.deepEqual(contract.toolPolicy.allowed, ['write_project_files']);
-  assert.equal(contract.requestBudget.limit, 3);
+  assert.equal(contract.toolPolicy.maxMutationAttempts, 1);
+  assert.equal(contract.requestBudget.limit, 1);
+  assert.equal(contract.requestBudget.reserveFinal, 0);
   assert.equal(contract.artifacts.mode, 'multi_file');
   assert.deepEqual(contract.artifacts.requiredExtensions, ['.html', '.css', '.js']);
   assert.ok(contract.artifacts.minimumWrites >= 3);
