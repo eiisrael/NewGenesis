@@ -23,11 +23,11 @@ export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   // inline. Se o streaming ainda não trouxe o fechamento, apenas a cauda do bloco
   // fica silenciosa; a prosa anterior e posterior a fences completos é preservada.
   text = stripFencedCode(text);
-  text = stripRawTechnicalLines(text);
   text = text.replace(/(?:^|\n)(?:\|[^\n]+\|\n)(?:\|?\s*:?-{3,}[^\n]*\n)(?:\|[^\n]+\|(?:\n|$))+/gm, `\n${TABLE_NOTICE}\n`);
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, label) => label ? `Imagem: ${label}.` : 'Há uma imagem na resposta.');
   text = text.replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/g, '$1');
   text = text.replace(/https?:\/\/\S+/g, 'um link');
+  text = stripRawTechnicalLines(text);
   text = text.replace(/\bpt[-_]BR\b/gi, 'português do Brasil');
   text = text.replace(/\b(?:versão\s+v?|v)(\d+)\.(\d+)\.(\d+)\b/gi, (_, major, minor, patch) => `versão ${major} ponto ${minor} ponto ${patch}`);
   text = text.replace(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g, (_, day, month, year) => spokenDate(day, month, year));
