@@ -292,7 +292,9 @@ export function recoverRequiredProjectToolCall({ result, tools = [], messages = 
     }
   }
 
+  const recovered = validateRecoveredBatch(recoverSingleToolCall({ result, tools, messages }), messages);
+  if (recovered?.toolCalls?.length) return recovered;
   const webBundle = recoverWebBundle(result, messages, allowed);
   if (webBundle) return webBundle;
-  return validateRecoveredBatch(recoverSingleToolCall({ result, tools, messages }), messages);
+  return recovered;
 }
