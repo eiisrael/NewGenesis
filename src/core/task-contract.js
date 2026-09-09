@@ -44,6 +44,17 @@ const FORMAT_PATTERNS = [
   ['markdown', /\b(markdown|\.md)\b/]
 ];
 
+const ARTIFACT_EXTENSION_PATTERNS = Object.freeze([
+  ['.html', /(?:^|[^a-z0-9])(?:html|\.html)(?=$|[^a-z0-9])/i],
+  ['.css', /(?:^|[^a-z0-9])(?:css|\.css)(?=$|[^a-z0-9])/i],
+  ['.js', /(?:^|[^a-z0-9])(?:javascript|java script|js|\.js)(?=$|[^a-z0-9])/i],
+  ['.ts', /(?:^|[^a-z0-9])(?:typescript|ts|\.ts)(?=$|[^a-z0-9])/i],
+  ['.py', /(?:^|[^a-z0-9])(?:python|py|\.py)(?=$|[^a-z0-9])/i],
+  ['.php', /(?:^|[^a-z0-9])(?:php|\.php)(?=$|[^a-z0-9])/i],
+  ['.json', /(?:^|[^a-z0-9])(?:json|\.json)(?=$|[^a-z0-9])/i]
+]);
+const EXPLICIT_FILE_PATTERN = /(?:^|[\s`"'(])([a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*\.[a-z0-9]{1,12})(?=$|[\s`"'),.;:!?])/gi;
+
 function outputFormat(text) {
   return FORMAT_PATTERNS.find(([, pattern]) => pattern.test(text))?.[0] || 'markdown';
 }
@@ -87,7 +98,29 @@ function complexityFor(kind, query, project = null) {
   return score >= 5 ? 'high' : score >= 2 ? 'medium' : 'low';
 }
 
-function toolPolicyFor(kind, text, complexity = 'low') {
+function artifactPlanFor(query, mutationIntent) {
+  const source = String(query || '');
+  const normalized = normalize(source);
+  const requiredFiles = [];
+  for (const match of normalized.matchAll(EXPLICIT_FILE_PATTERN)) {
+    const candidate = String(match[1] || '').replace(/^\.\//, '');
+    if (candidate && !requiredFiles.includes(candidate)) requiredFiles.push(candidate);
+  }
+  const requiredExtensions = ARTIFACT_EXTENSION_PATTERNS
+    .filter(([, pattern]) => pattern.test(normalized))
+    .map(([extension]) => extension);
+  const minimumWrites = mutationIntent === 'create_project'
+    ? Math.max(1, requiredFiles.length, requiredExtensions.length)
+    : mutationIntent === 'create_file' ? 1 : 0;
+  return {
+    mode: mutationIntent === 'create_project' ? 'multi_file' : mutationIntent === 'create_file' ? 'single_file' : 'unspecified',
+    requiredFiles,
+    requiredExtensions,
+    minimumWrites
+  };
+}
+
+function toolPolicyFor(kind, text, complexity = 'low', mutationIntent = 'edit', artifacts = null) {
   if (kind === 'project_overview') {
     return {
       strategy: 'local_project_profile', allowed: [], maxBatches: 0, maxCallsPerBatch: 0,
@@ -101,8 +134,23 @@ function toolPolicyFor(kind, text, complexity = 'low') {
     };
   }
   if (['change', 'fix'].includes(kind)) {
-    const mutationIntent = projectMutationIntent(text);
-
+    if (mutationIntent === 'create_project') {
+      return {
+        strategy: 'direct_service',
+        mutationIntent,
+        allowed: ['write_project_files'],
+        maxBatches: 0,
+        maxExplorationBatches: 0,
+        maxMutationAttempts: 3,
+        maxCallsPerBatch: 1,
+        maxResultCharacters: 16_000,
+        maxTaskResultCharacters: 40_000,
+        searchFirst: false,
+        preferTargetedReplacement: false,
+        verificationMode: 'batch_write_confirmation',
+        expectedArtifacts: artifacts
+      };
+    }
     if (mutationIntent === 'create_file') {
       return {
         strategy: 'direct_mutation',
@@ -138,7 +186,7 @@ function toolPolicyFor(kind, text, complexity = 'low') {
 
     const allowed = [
       ...PROJECT_READ_TOOL_NAMES,
-      ...PROJECT_MUTATION_TOOL_NAMES.filter(name => name !== 'delete_project_path'),
+      ...PROJECT_MUTATION_TOOL_NAMES.filter(name => name !== 'delete_project_path' && name !== 'write_project_files'),
       ...PROJECT_VERIFICATION_TOOL_NAMES
     ];
     if (requestsDeletion(text)) allowed.push('delete_project_path');
@@ -166,19 +214,29 @@ function toolPolicyFor(kind, text, complexity = 'low') {
   };
 }
 
-function successCriteria(kind, format, project) {
+function successCriteria(kind, format, project, artifacts) {
   const criteria = ['Responder integralmente ao pedido sem inventar informações.'];
   if (project) criteria.push('Usar evidências reais do projeto ativo e preservar alterações existentes que não façam parte do pedido.');
   if (kind === 'project_overview') criteria.push('Incluir inventário, tecnologias, pontos de entrada, estrutura e riscos observáveis.');
   if (['change', 'fix'].includes(kind)) {
     criteria.push('Executar pelo menos uma alteração real confirmada por ferramenta; um plano ou código apenas no chat não conclui a tarefa.');
     criteria.push('Usar busca/leitura apenas até obter contexto suficiente, adaptar-se a erros de ferramenta e verificar o resultado quando houver rotina segura disponível.');
+    if (artifacts?.mode === 'multi_file') {
+      criteria.push(`Confirmar a gravação de todos os artefatos do serviço em uma única operação segura (${artifacts.minimumWrites} arquivo(s) mínimo(s)).`);
+    }
   }
   if (format !== 'markdown') criteria.push(`Entregar o resultado principal no formato ${format}.`);
   return criteria;
 }
 
-function stepsFor(kind, mutationIntent = 'edit') {
+function stepsFor(kind, mutationIntent = 'edit', artifacts = null) {
+  if (kind === 'change' && mutationIntent === 'create_project') {
+    return [
+      `Preparar os artefatos do serviço${artifacts?.requiredExtensions?.length ? ` (${artifacts.requiredExtensions.join(', ')})` : ''}`,
+      'Gravar todos os arquivos em uma operação atômica',
+      'Reler e confirmar cada arquivo no disco'
+    ].map((label, index) => ({ id: `step-${index + 1}`, label, status: index === 0 ? 'in_progress' : 'pending' }));
+  }
   if (kind === 'change' && mutationIntent === 'create_file') {
     return ['Gerar o conteúdo necessário', 'Gravar o arquivo solicitado', 'Confirmar a gravação'].map((label, index) => ({
       id: `step-${index + 1}`, label, status: index === 0 ? 'in_progress' : 'pending'
@@ -200,11 +258,21 @@ function stepsFor(kind, mutationIntent = 'edit') {
   return steps.map((label, index) => ({ id: `step-${index + 1}`, label, status: index === 0 ? 'in_progress' : 'pending' }));
 }
 
-function requestPolicy(kind, complexity, mutationIntent = 'edit') {
+function requestPolicy(kind, complexity, mutationIntent = 'edit', artifacts = null) {
   if (kind === 'project_overview') return { limit: 0, inputTokenLimit: 0, maxRequestInputTokens: 0, reserveFinal: 0, deadlineMs: 0 };
   if (['change', 'fix'].includes(kind)) {
     if (mutationIntent === 'create_directory') {
       return { limit: 1, inputTokenLimit: 8_000, maxRequestInputTokens: 4_000, reserveFinal: 0, deadlineMs: 20_000 };
+    }
+    if (mutationIntent === 'create_project') {
+      const minimumWrites = Math.max(1, Number(artifacts?.minimumWrites || 1));
+      return {
+        limit: 3,
+        inputTokenLimit: Math.max(48_000, minimumWrites * 16_000),
+        maxRequestInputTokens: 16_000,
+        reserveFinal: 0,
+        deadlineMs: 120_000
+      };
     }
     if (mutationIntent === 'create_file') {
       return complexity === 'high'
@@ -230,12 +298,13 @@ export function createTaskContract(query, options = {}) {
   const kind = taskKind(text, Boolean(project));
   const format = outputFormat(text);
   const complexity = complexityFor(kind, query, project);
-  const toolPolicy = toolPolicyFor(kind, text, complexity);
-  const mutationIntent = toolPolicy.mutationIntent || 'edit';
+  const mutationIntent = ['change', 'fix'].includes(kind) ? projectMutationIntent(text) : 'edit';
+  const artifacts = artifactPlanFor(query, mutationIntent);
+  const toolPolicy = toolPolicyFor(kind, text, complexity, mutationIntent, artifacts);
 
   return {
     id: crypto.randomUUID(),
-    version: 3,
+    version: 4,
     createdAt: new Date().toISOString(),
     objective: String(query || '').trim(),
     kind,
@@ -243,10 +312,11 @@ export function createTaskContract(query, options = {}) {
     readOnly: !['change', 'fix'].includes(kind),
     outputFormat: format,
     project: project ? { id: project.id, name: project.name, fileCount: project.fileCount, writable: project.writable } : null,
-    requestBudget: requestPolicy(kind, complexity, mutationIntent),
+    artifacts,
+    requestBudget: requestPolicy(kind, complexity, mutationIntent, artifacts),
     toolPolicy,
-    successCriteria: successCriteria(kind, format, project),
-    steps: stepsFor(kind, mutationIntent)
+    successCriteria: successCriteria(kind, format, project, artifacts),
+    steps: stepsFor(kind, mutationIntent, artifacts)
   };
 }
 
