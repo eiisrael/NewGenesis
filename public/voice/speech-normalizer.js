@@ -19,9 +19,11 @@ export function normalizeVoiceTranscript(value) {
 
 export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   let text = String(value || '').replace(/\r\n?/g, '\n');
-  // Em streaming o fechamento de ``` pode ainda não ter chegado. Consumir até o
-  // fim atual evita que comentários, JavaScript ou HTML internos escapem para o TTS.
-  text = text.replace(/```[a-z0-9_+.#-]*\s*\n?[\s\S]*?(?:```|$)/gi, `\n${CODE_NOTICE}\n`);
+  // Primeiro removemos somente fences completos. Depois, se o streaming ainda
+  // deixou um fence sem fechamento, removemos apenas essa cauda. Assim uma fence
+  // fechada nunca engole a prosa normal que vem depois dela.
+  text = text.replace(/```[a-z0-9_+.#-]*\s*\n?[\s\S]*?```/gi, `\n${CODE_NOTICE}\n`);
+  text = text.replace(/```[a-z0-9_+.#-]*\s*\n?[\s\S]*$/gi, `\n${CODE_NOTICE}\n`);
   text = stripRawTechnicalLines(text);
   text = text.replace(/(?:^|\n)(?:\|[^\n]+\|\n)(?:\|?\s*:?-{3,}[^\n]*\n)(?:\|[^\n]+\|(?:\n|$))+/gm, `\n${TABLE_NOTICE}\n`);
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, label) => label ? `Imagem: ${label}.` : 'Há uma imagem na resposta.');
