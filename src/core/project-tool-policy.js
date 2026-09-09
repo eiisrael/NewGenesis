@@ -91,23 +91,25 @@ function onlyNamedTool(tools, name) {
 }
 
 const SPECIAL_FILE_NAME = '(?:dockerfile|makefile|procfile|license|readme|changelog|\\.gitignore|\\.dockerignore|\\.env|\\.npmrc|\\.editorconfig)';
-const SERVICE_TARGET = '(?:pagina|site|app|aplicacao|interface|landing page|dashboard|jogo|game|projeto)';
+const SERVICE_TARGET = '(?:pagina|site|app|aplicacao|interface|landing page|dashboard|jogo|game)';
 const SERVICE_BUILD_VERB = '(?:crie|criar|faca|fazer|monte|montar|desenvolva|desenvolver|construa|construir|implemente|implementar)';
 
 export function projectMutationIntent(objective = '') {
   const text = normalizedObjective(objective).replace(/[`“”]/g, '"');
 
-  // Pedidos de serviço que implicam vários artefatos devem ser tratados como uma
-  // entrega multi-arquivo atômica, não como a criação isolada de um único arquivo.
-  const genericProjectCreation = new RegExp(`\\b${SERVICE_BUILD_VERB}\\b.{0,160}\\b${SERVICE_TARGET}\\b`).test(text)
-    && (/\b(?:projeto|pasta do projeto|arquivos?|files?)\b/.test(text)
-      || /\b(?:html|css|javascript|java script|js|typescript|ts|python|php|react|vue|svelte)\b/.test(text));
-  if (genericProjectCreation) return 'create_project';
-
+  // Um caminho de arquivo explícito é sempre mais específico do que uma entrega
+  // genérica. Isso evita transformar "crie index.html" em scaffold multi-arquivo.
   const directFileCreation = /\b(?:crie|criar|create|adicione|adicionar|add)\s+(?:(?:um|uma|o|a|novo|nova|new)\s+)?(?:arquivo\s+|file\s+)?["']?[a-z0-9_.\/-]+\.[a-z0-9]{1,12}["']?\b/.test(text)
     || new RegExp(`\\b(?:crie|criar|create|adicione|adicionar|add)\\s+(?:(?:um|uma|o|a|novo|nova|new)\\s+)?(?:arquivo\\s+|file\\s+)?["']?${SPECIAL_FILE_NAME}["']?(?=$|[\\s,.;:!?])`, 'i').test(text)
     || /\b(?:crie|criar|create)\b.{0,36}\b(?:arquivo|file)\b/.test(text);
   if (directFileCreation) return 'create_file';
+
+  // Pedidos de serviço que implicam vários artefatos são tratados como uma entrega
+  // multi-arquivo atômica, não como a criação isolada de um único arquivo.
+  const genericProjectCreation = new RegExp(`\\b${SERVICE_BUILD_VERB}\\b.{0,160}\\b${SERVICE_TARGET}\\b`).test(text)
+    && (/\b(?:projeto|pasta do projeto|arquivos?|files?)\b/.test(text)
+      || /\b(?:html|css|javascript|java script|js|typescript|ts|python|php|react|vue|svelte)\b/.test(text));
+  if (genericProjectCreation) return 'create_project';
 
   const directDirectoryCreation = /\b(?:crie|criar|create|adicione|adicionar|add)\b.{0,28}\b(?:pasta|diretorio|directory|folder)\b/.test(text);
   if (directDirectoryCreation) return 'create_directory';
