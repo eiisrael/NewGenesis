@@ -190,6 +190,10 @@ function textToolInstruction(tools = []) {
   return 'O projeto ativo já está disponível. Esta fase exige UMA ação real com uma das ferramentas habilitadas. Não peça upload manual de arquivos do projeto e não finalize em prosa. Responda somente com o JSON de chamada da ferramenta e aguarde o resultado real.';
 }
 
+function forceTextServiceProtocol(tools = []) {
+  return tools.length === 1 && tools[0]?.function?.name === 'write_project_files';
+}
+
 export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
   constructor(options) {
     super(options);
@@ -273,6 +277,7 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
     const tools = agenticToolsForMessages(suppliedTools, input.messages || []);
     const phase = projectToolPhase(tools);
     const required = projectToolActionRequired(suppliedTools, tools);
+    const serviceTextProtocol = forceTextServiceProtocol(tools);
     this.activeTaskFingerprints.set(key, fingerprint);
     const state = this.sessionState(key);
     const previousMutationCount = state.mutations;
@@ -285,8 +290,13 @@ export class PreciseOpenRouterProvider extends ResilientOpenRouterProvider {
     try {
       if (suppressLegacyMutationGuard && state.mutations === 0) state.mutations = 1;
 
-      let request = { ...input, sessionId: key, tools };
-      if (required && input.candidate?.supportsTools === false) {
+      // Serviços multi-arquivo transportam blocos grandes de HTML/CSS/JS. Mesmo
+      // modelos que anunciam tool calling nativo podem serializar mal arrays ou
+      // strings extensas e produzir files=[]/files ausente. Para esse único caso,
+      // enviamos a geração como texto estruturado e recuperamos os blocos localmente
+      // em write_project_files validado antes de qualquer acesso ao disco.
+      let request = { ...input, sessionId: key, tools: serviceTextProtocol ? [] : tools };
+      if (required && (serviceTextProtocol || input.candidate?.supportsTools === false)) {
         request = {
           ...request,
           messages: [
