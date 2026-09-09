@@ -141,7 +141,7 @@ function toolPolicyFor(kind, text, complexity = 'low', mutationIntent = 'edit', 
         allowed: ['write_project_files'],
         maxBatches: 0,
         maxExplorationBatches: 0,
-        maxMutationAttempts: 3,
+        maxMutationAttempts: 1,
         maxCallsPerBatch: 1,
         maxResultCharacters: 16_000,
         maxTaskResultCharacters: 40_000,
@@ -267,7 +267,7 @@ function requestPolicy(kind, complexity, mutationIntent = 'edit', artifacts = nu
     if (mutationIntent === 'create_project') {
       const minimumWrites = Math.max(1, Number(artifacts?.minimumWrites || 1));
       return {
-        limit: 3,
+        limit: 1,
         inputTokenLimit: Math.max(48_000, minimumWrites * 16_000),
         maxRequestInputTokens: 16_000,
         reserveFinal: 0,

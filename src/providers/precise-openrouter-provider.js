@@ -184,6 +184,9 @@ function textToolInstruction(tools = []) {
       'Responda somente com um bloco Markdown completo para cada arquivo solicitado, usando as linguagens corretas (por exemplo ```html, ```css e ```javascript).',
       'Use quebras de linha reais dentro dos blocos; nunca substitua quebras por caracteres “n” nem por texto \\n.',
       'Para uma página HTML/CSS/JS padrão, use nomes coerentes: index.html, styles.css e script.js, e faça o HTML referenciar exatamente esses nomes.',
+      'Quando a entrega for uma página estática, ela deve continuar funcional se o usuário abrir index.html diretamente por file://, salvo se ele pedir explicitamente um servidor.',
+      'Não dependa sem fallback de APIs que exigem origem segura ou HTTP/HTTPS. Em especial, use navigator.share somente quando existir e location.protocol for http: ou https:, nunca compartilhe uma URL file://; para arquivo local, ofereça fallback para copiar o texto com navigator.clipboard quando disponível e, se isso falhar, um fallback simples como prompt.',
+      'Todo botão visível deve possuir um handler funcional e tratar cancelamentos/erros sem abrir janelas quebradas ou deixar a interface sem resposta.',
       'Não escreva explicações fora dos blocos. O Genesis converterá os blocos em uma chamada write_project_files real e só concluirá após a confirmação no disco.'
     ].join(' ');
   }
