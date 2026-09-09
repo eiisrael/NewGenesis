@@ -7,6 +7,7 @@ export const PROJECT_READ_TOOL_NAMES = unique([
 
 export const PROJECT_MUTATION_TOOL_NAMES = unique([
   'write_project_file',
+  'write_project_files',
   'replace_project_text',
   'create_project_directory',
   'move_project_path',
@@ -90,15 +91,20 @@ function onlyNamedTool(tools, name) {
 }
 
 const SPECIAL_FILE_NAME = '(?:dockerfile|makefile|procfile|license|readme|changelog|\\.gitignore|\\.dockerignore|\\.env|\\.npmrc|\\.editorconfig)';
+const SERVICE_TARGET = '(?:pagina|site|app|aplicacao|interface|landing page|dashboard|jogo|game|projeto)';
+const SERVICE_BUILD_VERB = '(?:crie|criar|faca|fazer|monte|montar|desenvolva|desenvolver|construa|construir|implemente|implementar)';
 
 export function projectMutationIntent(objective = '') {
   const text = normalizedObjective(objective).replace(/[`“”]/g, '"');
 
-  const genericProjectCreation = /\b(?:faca|fazer|monte|montar|desenvolva|desenvolver|construa|construir)\b.{0,120}\b(?:pagina|site|app|aplicacao|interface|landing page|dashboard|jogo|game)\b/.test(text)
-    && /\b(?:projeto|pasta do projeto|arquivos?|files?)\b/.test(text);
+  // Pedidos de serviço que implicam vários artefatos devem ser tratados como uma
+  // entrega multi-arquivo atômica, não como a criação isolada de um único arquivo.
+  const genericProjectCreation = new RegExp(`\\b${SERVICE_BUILD_VERB}\\b.{0,160}\\b${SERVICE_TARGET}\\b`).test(text)
+    && (/\b(?:projeto|pasta do projeto|arquivos?|files?)\b/.test(text)
+      || /\b(?:html|css|javascript|java script|js|typescript|ts|python|php|react|vue|svelte)\b/.test(text));
+  if (genericProjectCreation) return 'create_project';
 
-  const directFileCreation = genericProjectCreation
-    || /\b(?:crie|criar|create|adicione|adicionar|add)\s+(?:(?:um|uma|o|a|novo|nova|new)\s+)?(?:arquivo\s+|file\s+)?["']?[a-z0-9_.\/-]+\.[a-z0-9]{1,12}["']?\b/.test(text)
+  const directFileCreation = /\b(?:crie|criar|create|adicione|adicionar|add)\s+(?:(?:um|uma|o|a|novo|nova|new)\s+)?(?:arquivo\s+|file\s+)?["']?[a-z0-9_.\/-]+\.[a-z0-9]{1,12}["']?\b/.test(text)
     || new RegExp(`\\b(?:crie|criar|create|adicione|adicionar|add)\\s+(?:(?:um|uma|o|a|novo|nova|new)\\s+)?(?:arquivo\\s+|file\\s+)?["']?${SPECIAL_FILE_NAME}["']?(?=$|[\\s,.;:!?])`, 'i').test(text)
     || /\b(?:crie|criar|create)\b.{0,36}\b(?:arquivo|file)\b/.test(text);
   if (directFileCreation) return 'create_file';
@@ -116,7 +122,7 @@ export function projectMutationIntent(objective = '') {
 }
 
 export function projectMutationNeedsExploration(objective = '') {
-  return !['create_file', 'create_directory'].includes(projectMutationIntent(objective));
+  return !['create_file', 'create_project', 'create_directory'].includes(projectMutationIntent(objective));
 }
 
 export function preferredProjectMutationTools(tools = [], { objective = '', hasReadEvidence = false } = {}) {
@@ -127,6 +133,7 @@ export function preferredProjectMutationTools(tools = [], { objective = '', hasR
   if (intent === 'delete') return onlyNamedTool(mutations, 'delete_project_path') || mutations;
   if (intent === 'move') return onlyNamedTool(mutations, 'move_project_path') || mutations;
   if (intent === 'create_directory') return onlyNamedTool(mutations, 'create_project_directory') || mutations;
+  if (intent === 'create_project') return onlyNamedTool(mutations, 'write_project_files') || mutations;
   if (intent === 'create_file') return onlyNamedTool(mutations, 'write_project_file') || mutations;
 
   const text = normalizedObjective(objective);
