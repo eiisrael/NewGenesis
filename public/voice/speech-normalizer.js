@@ -19,11 +19,15 @@ export function normalizeVoiceTranscript(value) {
 
 export function normalizeSpokenText(value, { maxLength = 16000 } = {}) {
   let text = String(value || '').replace(/\r\n?/g, '\n');
-  text = text.replace(/```[\s\S]*?```/g, `\n${CODE_NOTICE}\n`);
+  // Fences são filtrados por linha para distinguir blocos markdown de crases
+  // inline. Se o streaming ainda não trouxe o fechamento, apenas a cauda do bloco
+  // fica silenciosa; a prosa anterior e posterior a fences completos é preservada.
+  text = stripFencedCode(text);
   text = text.replace(/(?:^|\n)(?:\|[^\n]+\|\n)(?:\|?\s*:?-{3,}[^\n]*\n)(?:\|[^\n]+\|(?:\n|$))+/gm, `\n${TABLE_NOTICE}\n`);
   text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, label) => label ? `Imagem: ${label}.` : 'Há uma imagem na resposta.');
   text = text.replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/g, '$1');
   text = text.replace(/https?:\/\/\S+/g, 'um link');
+  text = stripRawTechnicalLines(text);
   text = text.replace(/\bpt[-_]BR\b/gi, 'português do Brasil');
   text = text.replace(/\b(?:versão\s+v?|v)(\d+)\.(\d+)\.(\d+)\b/gi, (_, major, minor, patch) => `versão ${major} ponto ${minor} ponto ${patch}`);
   text = text.replace(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g, (_, day, month, year) => spokenDate(day, month, year));
@@ -81,6 +85,68 @@ export function takeStableSentences(value, { flush = false, maxChunk = 260 } = {
   }
   if (current) chunks.push(current);
   return { chunks, rest };
+}
+
+function stripFencedCode(value) {
+  const output = [];
+  let inFence = false;
+  for (const line of String(value || '').split('\n')) {
+    const marker = line.match(/^\s*```/);
+    if (marker) {
+      if (!inFence) output.push(CODE_NOTICE);
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) output.push(line);
+  }
+  return output.join('\n');
+}
+
+function stripRawTechnicalLines(value) {
+  const lines = String(value || '').split('\n');
+  const output = [];
+  let technicalRun = false;
+  let blockComment = false;
+  for (const line of lines) {
+    const trimmed = String(line || '').trim();
+    if (blockComment) {
+      if (!technicalRun) output.push(CODE_NOTICE);
+      technicalRun = true;
+      if (trimmed.includes('*/')) blockComment = false;
+      continue;
+    }
+    if (/^\/\*/.test(trimmed)) {
+      if (!technicalRun) output.push(CODE_NOTICE);
+      technicalRun = true;
+      blockComment = !trimmed.includes('*/');
+      continue;
+    }
+    if (looksLikeTechnicalLine(line)) {
+      if (!technicalRun) output.push(CODE_NOTICE);
+      technicalRun = true;
+      continue;
+    }
+    technicalRun = false;
+    output.push(line);
+  }
+  return output.join('\n');
+}
+
+function looksLikeTechnicalLine(value) {
+  const line = String(value || '').trim();
+  if (!line) return false;
+  if (/^\/\//.test(line) || /^#!\//.test(line)) return true;
+  if (/^\s*[{}\[\],]+\s*$/.test(line)) return true;
+  if (/^\s*["']?(?:tool|command|arguments|result|path|content)["']?\s*:/i.test(line)) return true;
+  if (/^\s*\{?.*["'](?:tool|command|arguments)["']\s*:/i.test(line)) return true;
+  if (/<\/?[a-z][^>]*>/i.test(line)) return true;
+  if (/\b(?:document|window|navigator|console)\.[a-z_$][\w$]*\b/i.test(line)) return true;
+  if (/\b(?:querySelector|addEventListener|classList|textContent|innerHTML|createElement)\s*\(/i.test(line)) return true;
+  if (/^\s*(?:const|let|var|function|class|import|export|async\s+function|return\b|if\s*\(|for\s*\(|while\s*\()/i.test(line)) return true;
+  if (/=>|\{\s*$|;\s*$/.test(line) && /[=(){};]|\.[a-z_$][\w$]*\s*\(/i.test(line)) return true;
+  if (/^\s*[.#][a-z0-9_-]+[^\n{]*\{/i.test(line)) return true;
+  if (/^\s*[a-z-]+\s*:\s*[^;]+;\s*$/i.test(line)) return true;
+  return false;
 }
 
 function isAbbreviation(value) {

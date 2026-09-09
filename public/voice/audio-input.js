@@ -1,11 +1,11 @@
 export class AdaptiveVoiceActivityDetector {
   constructor(options = {}) {
     this.options = {
-      threshold: Number(options.threshold) || 0.018,
-      startFrames: Number(options.startFrames) || 3,
-      bargeInFrames: Number(options.bargeInFrames) || 5,
-      silenceMs: Number(options.silenceMs) || 700,
-      minSpeechMs: Number(options.minSpeechMs) || 260,
+      threshold: Number(options.threshold) || 0.009,
+      startFrames: Number(options.startFrames) || 2,
+      bargeInFrames: Number(options.bargeInFrames) || 4,
+      silenceMs: Number(options.silenceMs) || 650,
+      minSpeechMs: Number(options.minSpeechMs) || 240,
       maxSpeechMs: Number(options.maxSpeechMs) || 30000,
       bargeInMultiplier: Number(options.bargeInMultiplier) || 1.8
     };
@@ -14,7 +14,7 @@ export class AdaptiveVoiceActivityDetector {
 
   reset() {
     this.speaking = false;
-    this.noiseFloor = 0.004;
+    this.noiseFloor = 0.0025;
     this.voicedFrames = 0;
     this.startedAt = 0;
     this.silenceStartedAt = 0;
@@ -22,10 +22,22 @@ export class AdaptiveVoiceActivityDetector {
 
   pushLevel(level, timestamp, { playbackActive = false } = {}) {
     const rms = Math.max(0, Number(level) || 0);
-    const adaptive = Math.max(this.options.threshold, this.noiseFloor * 3.2);
-    const threshold = playbackActive ? adaptive * this.options.bargeInMultiplier : adaptive;
+    // O limiar anterior multiplicava o ruído por 3,2 e podia ficar acima de uma
+    // voz perfeitamente audível em microfones de notebook/Windows. Aqui usamos
+    // uma margem relativa mais conservadora, mantendo um piso absoluto contra
+    // falsos positivos e um limiar maior apenas durante barge-in.
+    const adaptive = Math.max(
+      this.options.threshold,
+      this.noiseFloor + 0.0035,
+      this.noiseFloor * 1.65
+    );
+    const threshold = playbackActive
+      ? Math.max(adaptive * this.options.bargeInMultiplier, this.options.threshold * 1.5)
+      : adaptive;
     const voiced = rms >= threshold;
-    if (!this.speaking && !voiced) this.noiseFloor = Math.min(0.03, this.noiseFloor * 0.96 + rms * 0.04);
+    if (!this.speaking && !voiced) {
+      this.noiseFloor = Math.min(0.03, this.noiseFloor * 0.975 + rms * 0.025);
+    }
 
     if (!this.speaking) {
       this.voicedFrames = voiced ? this.voicedFrames + 1 : 0;

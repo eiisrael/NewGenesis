@@ -36,6 +36,8 @@ const DIAGNOSE = /\b(erro|error|bug|falha|crash|exception|nao funciona|quebrou|d
 const CHECK = /\b(teste|testes|tests?|lint|build|compile|compilar|status|diff|verifique|verificar|validate|validar)\b/;
 const BROAD_SCOPE = /\b(todo|toda|todos|todas|inteiro|inteira|completo|completa|global|projeto todo|aplicacao toda|codebase|whole|entire|all files|everywhere|arquitetura|architecture|migrar|migrate|modernizar|modernize)\b/;
 const MULTI_STEP = /\b(e depois|depois|tambem|al[eé]m disso|em seguida|then|also|after that|and then)\b/;
+const STATIC_WEB_SERVICE = /\b(?:pagina|site|landing page|dashboard)\b/;
+const SINGLE_FILE_WEB_REQUEST = /\b(?:arquivo unico|single file|somente um arquivo|apenas um arquivo|html unico|tudo (?:em|no) index\.html|somente index\.html|apenas index\.html)\b/;
 
 const FORMAT_PATTERNS = [
   ['bash', /\b(bash|shell script|\.sh)\b/],
@@ -109,6 +111,14 @@ function artifactPlanFor(query, mutationIntent) {
   const requiredExtensions = ARTIFACT_EXTENSION_PATTERNS
     .filter(([, pattern]) => pattern.test(normalized))
     .map(([extension]) => extension);
+  const webBundle = mutationIntent === 'create_project'
+    && STATIC_WEB_SERVICE.test(normalized)
+    && !SINGLE_FILE_WEB_REQUEST.test(normalized);
+  if (webBundle) {
+    for (const extension of ['.html', '.css', '.js']) {
+      if (!requiredExtensions.includes(extension)) requiredExtensions.push(extension);
+    }
+  }
   const minimumWrites = mutationIntent === 'create_project'
     ? Math.max(1, requiredFiles.length, requiredExtensions.length)
     : mutationIntent === 'create_file' ? 1 : 0;
@@ -116,7 +126,8 @@ function artifactPlanFor(query, mutationIntent) {
     mode: mutationIntent === 'create_project' ? 'multi_file' : mutationIntent === 'create_file' ? 'single_file' : 'unspecified',
     requiredFiles,
     requiredExtensions,
-    minimumWrites
+    minimumWrites,
+    webBundle
   };
 }
 
@@ -223,6 +234,7 @@ function successCriteria(kind, format, project, artifacts) {
     criteria.push('Usar busca/leitura apenas até obter contexto suficiente, adaptar-se a erros de ferramenta e verificar o resultado quando houver rotina segura disponível.');
     if (artifacts?.mode === 'multi_file') {
       criteria.push(`Confirmar a gravação de todos os artefatos do serviço em uma única operação segura (${artifacts.minimumWrites} arquivo(s) mínimo(s)).`);
+      if (artifacts.webBundle) criteria.push('Entregar HTML, CSS e JavaScript juntos, sem referências locais pendentes para uma continuação futura.');
     }
   }
   if (format !== 'markdown') criteria.push(`Entregar o resultado principal no formato ${format}.`);
@@ -268,10 +280,10 @@ function requestPolicy(kind, complexity, mutationIntent = 'edit', artifacts = nu
       const minimumWrites = Math.max(1, Number(artifacts?.minimumWrites || 1));
       return {
         limit: 1,
-        inputTokenLimit: Math.max(48_000, minimumWrites * 16_000),
+        inputTokenLimit: Math.max(64_000, minimumWrites * 20_000),
         maxRequestInputTokens: 16_000,
         reserveFinal: 0,
-        deadlineMs: 120_000
+        deadlineMs: 150_000
       };
     }
     if (mutationIntent === 'create_file') {
@@ -304,7 +316,7 @@ export function createTaskContract(query, options = {}) {
 
   return {
     id: crypto.randomUUID(),
-    version: 4,
+    version: 5,
     createdAt: new Date().toISOString(),
     objective: String(query || '').trim(),
     kind,
