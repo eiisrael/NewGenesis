@@ -1,7 +1,50 @@
 import { isProjectMutationTool, isProjectVerificationTool } from './project-tool-policy.js';
 
+const FILE_PATH_SOURCE = '[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\\.[A-Za-z0-9]{1,12}';
+const COMPLETION_CLAIM = /\b(?:criad|atualiz|alterad|modificad|gravad|escrit|aplicad|confirmad|disponivel|pront|complet|concluid)\w*\b/;
+const NEGATED_COMPLETION_CLAIM = /\b(?:nao|nenhum|nenhuma|sem)\b.{0,80}\b(?:criad|atualiz|alterad|modificad|gravad|escrit|aplicad|confirmad|disponivel|pront|complet|concluid)\w*\b/;
+
 function check(id, label, passed, detail, required = true) {
   return { id, label, passed: Boolean(passed), detail: String(detail || ''), required };
+}
+
+function normalizedClaimText(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function filePathsIn(value) {
+  const pattern = new RegExp(FILE_PATH_SOURCE, 'gi');
+  return [...String(value || '').matchAll(pattern)].map(match => match[0].replace(/^\.\//, '').toLowerCase());
+}
+
+function successfulMutationTargets(evidence = []) {
+  const targets = new Set();
+  for (const item of evidence) {
+    if (item?.ok !== true || !isProjectMutationTool(item?.tool)) continue;
+    try {
+      const args = JSON.parse(String(item.arguments || '{}'));
+      if (args.path) targets.add(String(args.path).replace(/^\.\//, '').toLowerCase());
+      if (args.to) targets.add(String(args.to).replace(/^\.\//, '').toLowerCase());
+      if (Array.isArray(args.files)) {
+        for (const file of args.files) if (file?.path) targets.add(String(file.path).replace(/^\.\//, '').toLowerCase());
+      }
+    } catch { /* argumentos podem estar compactados; o resumo ainda fornece evidência */ }
+    for (const target of filePathsIn(item.summary)) targets.add(target);
+  }
+  return targets;
+}
+
+function claimedCompletedFiles(content) {
+  const claims = new Set();
+  for (const line of String(content || '').split(/\r?\n/)) {
+    const normalized = normalizedClaimText(line);
+    if (!COMPLETION_CLAIM.test(normalized) || NEGATED_COMPLETION_CLAIM.test(normalized)) continue;
+    for (const target of filePathsIn(line)) claims.add(target);
+  }
+  return claims;
 }
 
 export function verifyTaskOutcome({ contract, response = {}, evidence = [], usage = {} } = {}) {
@@ -34,6 +77,9 @@ export function verifyTaskOutcome({ contract, response = {}, evidence = [], usag
     const mutation = evidence.find(item => isProjectMutationTool(item?.tool) && item?.ok === true);
     const mutationFailures = evidence.filter(item => isProjectMutationTool(item?.tool) && item?.ok !== true);
     const verification = evidence.find(item => isProjectVerificationTool(item?.tool) && item?.ok === true);
+    const mutationTargets = successfulMutationTargets(evidence);
+    const completedFileClaims = claimedCompletedFiles(content);
+    const unsupportedClaims = [...completedFileClaims].filter(target => !mutationTargets.has(target));
     checks.push(check(
       'mutation-executed',
       'Resultado solicitado confirmado no projeto',
@@ -41,6 +87,16 @@ export function verifyTaskOutcome({ contract, response = {}, evidence = [], usag
       mutation?.summary || (mutationFailures.length
         ? `${mutationFailures.length} tentativa(s) de alteração não foram confirmadas.`
         : 'Nenhuma ferramenta de escrita confirmou alteração.')
+    ));
+    checks.push(check(
+      'mutation-claims-grounded',
+      'Arquivos declarados como concluídos possuem evidência real',
+      unsupportedClaims.length === 0,
+      unsupportedClaims.length
+        ? `A resposta declarou como concluído(s) sem evidência de mutação confirmada: ${unsupportedClaims.join(', ')}.`
+        : completedFileClaims.size
+          ? `${completedFileClaims.size} arquivo(s) declarado(s) como concluído(s) possuem evidência de mutação confirmada.`
+          : 'A resposta não declarou arquivos específicos como concluídos sem evidência.'
     ));
     checks.push(check(
       'verification-run',

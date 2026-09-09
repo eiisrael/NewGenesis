@@ -39,11 +39,11 @@ export const PROJECT_TOOL_DEFINITIONS = Object.freeze([
     end_line: { type: 'integer', minimum: 1, description: 'Última linha; a ferramenta limita cada leitura a no máximo 220 linhas.' },
     start_character: { type: 'integer', minimum: 0, description: 'Deslocamento opcional para continuar arquivos minificados ou linhas muito longas. Use nextStartCharacter retornado pela leitura anterior.' }
   }, ['path']),
-  functionTool('write_project_file', 'Crie ou substitua um arquivo de texto no projeto. Use para arquivo novo ou quando uma substituição localizada não for adequada. Envie o conteúdo completo final.', {
+  functionTool('write_project_file', 'Crie ou substitua um arquivo de texto no projeto. Use para arquivo novo ou quando uma substituição localizada não for adequada. Envie o conteúdo completo final. A ferramenta só informa sucesso depois de reler o arquivo no disco e confirmar que o conteúdo persistido corresponde ao conteúdo solicitado.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo.' },
     content: { type: 'string', description: 'Conteúdo completo que será gravado.' }
   }, ['path', 'content']),
-  functionTool('replace_project_text', 'Edite um trecho exato de um arquivo existente. Prefira esta ferramenta para mudanças localizadas: reduz risco, tokens e preserva código não relacionado. Se o trecho tiver mudado no disco, a falha retorna um recorte atual para você corrigir old_text e tentar novamente sem reabrir uma exploração ampla.', {
+  functionTool('replace_project_text', 'Edite um trecho exato de um arquivo existente. Prefira esta ferramenta para mudanças localizadas: reduz risco, tokens e preserva código não relacionado. Se o trecho tiver mudado no disco, a falha retorna um recorte atual para você corrigir old_text e tentar novamente sem reabrir uma exploração ampla. O sucesso só é retornado depois de uma releitura pós-escrita do arquivo.', {
     path: { type: 'string', description: 'Caminho relativo do arquivo existente.' },
     old_text: { type: 'string', minLength: 1, maxLength: 32000, description: 'Trecho atual exato que será substituído.' },
     new_text: { type: 'string', maxLength: 32000, description: 'Novo trecho que entrará no lugar.' },
@@ -80,6 +80,40 @@ function parseArguments(value) {
   if (value && typeof value === 'object') return value;
   try { return JSON.parse(String(value || '{}')); }
   catch { throw toolError('O modelo enviou argumentos de ferramenta inválidos.', 'invalid_tool_arguments'); }
+}
+
+function normalizedWrittenContent(value) {
+  return String(value ?? '').replace(/^\uFEFF/, '');
+}
+
+async function readBackWrittenFile(projectStore, relativePath) {
+  if (typeof projectStore?.readText !== 'function') {
+    throw toolError(
+      `A gravação de “${relativePath}” não pôde ser confirmada porque o projeto não oferece releitura do arquivo.`,
+      'project_write_verification_unavailable'
+    );
+  }
+  try {
+    return await projectStore.readText(relativePath);
+  } catch (error) {
+    throw toolError(
+      `A gravação de “${relativePath}” não pôde ser confirmada por releitura no disco: ${error?.message || 'arquivo indisponível'}.`,
+      'project_write_verification_failed'
+    );
+  }
+}
+
+async function confirmWrittenFile(projectStore, relativePath, expectedContent) {
+  const source = normalizedWrittenContent(expectedContent);
+  const expected = redactText(source, Math.max(source.length, 1));
+  const persisted = await readBackWrittenFile(projectStore, relativePath);
+  if (persisted !== expected) {
+    throw toolError(
+      `A gravação de “${relativePath}” não foi confirmada: o conteúdo relido do disco difere do conteúdo solicitado.`,
+      'project_write_verification_failed'
+    );
+  }
+  return { verified: true, verification: 'read_after_write' };
 }
 
 async function exists(target) {
@@ -398,7 +432,12 @@ export class ProjectToolExecutor {
         }
       }
       await this.projectStore.writeText(args.path, args.content);
-      return { path: args.path, summary: `${args.path} atualizado com segurança.` };
+      const confirmation = await confirmWrittenFile(this.projectStore, args.path, args.content);
+      return {
+        path: args.path,
+        ...confirmation,
+        summary: `${args.path} gravado e confirmado por releitura no disco.`
+      };
     }
     if (name === 'replace_project_text') {
       const replacements = await this.projectStore.replaceText(args.path, args.old_text, args.new_text, args.expected_replacements);
@@ -407,10 +446,19 @@ export class ProjectToolExecutor {
           path: args.path,
           replacements,
           alreadySatisfied: true,
+          verified: true,
+          verification: 'precondition_confirmed',
           summary: `${args.path} já não continha o trecho solicitado; o resultado desejado já estava aplicado no disco.`
         };
       }
-      return { path: args.path, replacements, summary: `${args.path} atualizado em ${replacements} trecho${replacements === 1 ? '' : 's'} exato${replacements === 1 ? '' : 's'}.` };
+      await readBackWrittenFile(this.projectStore, args.path);
+      return {
+        path: args.path,
+        replacements,
+        verified: true,
+        verification: 'read_after_write',
+        summary: `${args.path} atualizado em ${replacements} trecho${replacements === 1 ? '' : 's'} exato${replacements === 1 ? '' : 's'} e confirmado por releitura no disco.`
+      };
     }
     if (name === 'create_project_directory') {
       await this.projectStore.createDirectory(args.path);
